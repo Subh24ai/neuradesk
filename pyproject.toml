@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neuradesk"
+version = "0.1.0"
+description = "Agentic IT/HR service platform powered by LangGraph"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Web framework
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "python-multipart==0.0.20",
+
+    # LangGraph / LangChain
+    "langchain==0.3.14",
+    "langchain-core==0.3.28",
+    "anthropic==0.40.0",
+    "langchain-anthropic==0.3.0",
+    "langchain-community==0.3.14",
+    "langgraph==0.2.60",
+    "langsmith==0.2.10",
+
+    # RAG
+    "faiss-cpu==1.9.0",
+    "rank-bm25==0.2.2",
+    "sentence-transformers==3.3.1",
+
+    # DSPy
+    "dspy==2.5.17",
+
+    # Database
+    "sqlalchemy==2.0.36",
+    "psycopg2-binary==2.9.10",
+    "alembic==1.14.0",
+
+    # Auth
+    "PyJWT==2.9.0",
+    "bcrypt==4.2.0",
+    "email-validator==2.2.0",
+
+    # Utilities
+    "python-dotenv==1.0.1",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "httpx==0.28.1",
+    "tenacity==9.0.0",
+    "structlog==24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "pytest-httpx==0.35.0",
+    "ragas==0.2.9",
+    "ruff==0.8.6",
+    "mypy==1.13.0",
+    "types-psycopg2==2.9.21.20241019",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "api", "services", "rag", "dspy_modules", "tracing"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
