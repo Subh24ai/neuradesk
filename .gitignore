@@ -62,3 +62,5 @@ frontend/build/
 # GCP
 *.json.key
 gcp-service-account.json
+*.db
+CLAUDE.md

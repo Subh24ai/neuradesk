@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from agents.graph import graph as langgraph_graph
 from agents.graph import run_ticket
 from api.auth import auth_router, get_current_user
+from core.dspy_config import configure_dspy
 from api.models import (
     Base,
     TicketCreateRequest,
@@ -31,8 +32,9 @@ log = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Create all DB tables on startup; log shutdown."""
+    """Create all DB tables and configure DSPy on startup; log shutdown."""
     Base.metadata.create_all(bind=engine)
+    configure_dspy()
     log.info("app.startup", db_url=str(engine.url))
     yield
     log.info("app.shutdown")
