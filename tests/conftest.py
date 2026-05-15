@@ -10,6 +10,7 @@ import os
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("ENTERPRISE_API_SECRET", "test-enterprise-secret")
 os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-32chars!!")
+os.environ.setdefault("ENTERPRISE_API_URL", "http://localhost:8001")
 
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -167,4 +168,33 @@ def mock_run_ticket():
     API tests use this so they are isolated from graph logic and run fast.
     """
     with patch("api.main.run_ticket", return_value=_MOCK_TICKET_STATE):
+        yield
+
+
+# ── Enterprise API HTTP mock ──────────────────────────────────────────────────
+
+_DEFAULT_ENTERPRISE_RESPONSE: dict = {
+    "success": True,
+    "action": "stub",
+    "destructive": False,
+    "result": {
+        "status": "ok",
+        "temp_password": "TestTmp-abc123!",
+        "ticket_ref": "TEST-000001",
+    },
+    "timestamp": "2026-01-01T00:00:00+00:00",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_enterprise_http():
+    """Prevent real HTTP calls from action_node in every test.
+
+    tests/test_action_node.py overrides _post_enterprise per test with its own
+    patch — that patch shadows this one within the test's scope.
+    """
+    with patch(
+        "agents.action_node._post_enterprise",
+        return_value=_DEFAULT_ENTERPRISE_RESPONSE,
+    ):
         yield
