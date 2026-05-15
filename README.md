@@ -174,4 +174,4 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 
 ---
 
-Built by [Subhash Gupta](https://linkedin.com/in/subhashgupta) · [GitHub](https://github.com/subhashgupta/neuradesk)
+Built by [Subhash Gupta](https://linkedin.com/in/subhashgupta) · [GitHub](https://github.com/Subh24ai/neuradesk)
