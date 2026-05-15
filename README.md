@@ -70,7 +70,7 @@ graph TD
 **Prerequisites:** Python 3.11, Docker (for Postgres — optional, SQLite works locally)
 
 ```bash
-git clone https://github.com/subhashgupta/neuradesk.git
+git clone https://github.com/Subh24ai/neuradesk.git
 cd neuradesk
 
 python3.11 -m venv .venv && source .venv/bin/activate
