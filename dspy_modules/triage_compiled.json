@@ -1,0 +1,130 @@
+{
+  "predict": {
+    "lm": null,
+    "traces": [],
+    "train": [],
+    "demos": [
+      {
+        "augmented": true,
+        "ticket_text": "I forgot my password and can't log in to my corporate email account.",
+        "category": "password_reset",
+        "confidence": 0.98,
+        "reasoning": "Account lockout due to forgotten password is a classic password reset scenario."
+      },
+      {
+        "augmented": true,
+        "ticket_text": "My Active Directory password expired overnight and I'm locked out of all systems.",
+        "category": "password_reset",
+        "confidence": 0.98,
+        "reasoning": "Account lockout due to password expiration requires a password reset."
+      },
+      {
+        "augmented": true,
+        "ticket_text": "I entered my password wrong too many times and my account is now locked.",
+        "category": "password_reset",
+        "confidence": 0.95,
+        "reasoning": "Account lockout due to excessive incorrect login attempts requires password reset or unlock."
+      },
+      {
+        "augmented": true,
+        "ticket_text": "Can someone reset my Windows login password? I can't remember what it is.",
+        "category": "password_reset",
+        "confidence": 0.98,
+        "reasoning": "Forgotten password is a classic scenario for password reset assistance."
+      },
+      {
+        "ticket_text": "CRITICAL: database cluster disk usage at 98% \u2014 queries are timing out and writes are failing.",
+        "category": "incident_report",
+        "confidence": 0.99,
+        "reasoning": "Disk-full condition causing query failures is a critical infrastructure incident."
+      },
+      {
+        "ticket_text": "I got a security alert asking me to change my password immediately \u2014 please guide me.",
+        "category": "password_reset",
+        "confidence": 0.92,
+        "reasoning": "Security-triggered password change is a forced password reset workflow."
+      },
+      {
+        "ticket_text": "I require temporary access to the client VPN environment for the next 30 days.",
+        "category": "access_request",
+        "confidence": 0.93,
+        "reasoning": "Time-boxed access to a client VPN is a scoped access provisioning request."
+      },
+      {
+        "ticket_text": "Can you set up Postman on my machine for API testing?",
+        "category": "software_install",
+        "confidence": 0.95,
+        "reasoning": "Developer tool installation request for API testing purposes."
+      },
+      {
+        "ticket_text": "Requesting 3 days of bereavement leave following the passing of my grandfather.",
+        "category": "leave_approval",
+        "confidence": 0.98,
+        "reasoning": "Bereavement leave request, a specific and sensitive leave type."
+      },
+      {
+        "ticket_text": "Please install the JIRA desktop client \u2014 the web version is too slow for my workflow.",
+        "category": "software_install",
+        "confidence": 0.94,
+        "reasoning": "Preference-driven request to install a desktop alternative to a web tool."
+      },
+      {
+        "ticket_text": "Can you grant me edit permissions to the shared Engineering Confluence space?",
+        "category": "access_request",
+        "confidence": 0.94,
+        "reasoning": "Permission change request for a collaboration tool's shared workspace."
+      },
+      {
+        "ticket_text": "I need emergency leave today \u2014 there's a family emergency I have to attend to.",
+        "category": "leave_approval",
+        "confidence": 0.96,
+        "reasoning": "Urgent same-day emergency leave request."
+      },
+      {
+        "ticket_text": "I need Adobe Acrobat Pro to edit and sign contracts \u2014 can you get it approved and installed?",
+        "category": "software_install",
+        "confidence": 0.95,
+        "reasoning": "Licensed software procurement and installation request."
+      },
+      {
+        "ticket_text": "I'd like to use my remaining 5 PTO days before December 31st. Please confirm approval.",
+        "category": "leave_approval",
+        "confidence": 0.97,
+        "reasoning": "Year-end PTO balance usage request."
+      },
+      {
+        "ticket_text": "The CI\/CD pipeline is broken \u2014 all builds are failing and no deployments can go out.",
+        "category": "incident_report",
+        "confidence": 0.96,
+        "reasoning": "CI\/CD outage blocking all releases is a high-severity engineering incident."
+      },
+      {
+        "ticket_text": "I need read access to the production PostgreSQL database for my analytics work.",
+        "category": "access_request",
+        "confidence": 0.96,
+        "reasoning": "Explicit request for database access permissions for a defined business purpose."
+      }
+    ],
+    "signature": {
+      "instructions": "Classify an enterprise IT\/HR support ticket into the correct service category.\n\nCategories: password_reset | access_request | software_install |\n            leave_approval | incident_report | unknown",
+      "fields": [
+        {
+          "prefix": "Ticket Text:",
+          "description": "Raw support ticket text submitted by the employee."
+        },
+        {
+          "prefix": "Category:",
+          "description": "Ticket category \u2014 one of: password_reset, access_request, software_install, leave_approval, incident_report, unknown."
+        },
+        {
+          "prefix": "Confidence:",
+          "description": "Confidence score as a decimal between 0.0 and 1.0."
+        },
+        {
+          "prefix": "Reasoning:",
+          "description": "One-sentence explanation of why this category was chosen."
+        }
+      ]
+    }
+  }
+}

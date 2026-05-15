@@ -20,7 +20,7 @@ def get_llm() -> BaseChatModel:
         from langchain_groq import ChatGroq  # type: ignore[import-untyped]
 
         return ChatGroq(
-            model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             api_key=os.getenv("GROQ_API_KEY", ""),
         )
 

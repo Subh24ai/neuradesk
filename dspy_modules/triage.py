@@ -15,8 +15,16 @@ from typing import Any
 
 import dspy
 import structlog
+from dotenv import load_dotenv
 
+from core.dspy_config import configure_dspy
 from dspy_modules.training_data import TRAINING_EXAMPLES
+
+# Auto-configure the DSPy LM when this module is imported outside FastAPI.
+# configure_dspy() is idempotent — it is a no-op if an LM is already set
+# (e.g. by FastAPI lifespan or a test fixture's DummyLM).
+load_dotenv()
+configure_dspy()
 
 log = structlog.get_logger(__name__)
 
@@ -220,7 +228,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     lm = dspy.LM(
-        f"groq/{os.getenv('GROQ_MODEL', 'llama-3.1-70b-versatile')}",
+        f"groq/{os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}",
         api_key=groq_key,
     )
     dspy.configure(lm=lm)

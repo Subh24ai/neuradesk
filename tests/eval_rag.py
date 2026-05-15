@@ -94,7 +94,7 @@ def main() -> None:
 
     # Configure RAGAS to use Groq instead of OpenAI.
     groq_llm = ChatGroq(
-        model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
+        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         api_key=os.getenv("GROQ_API_KEY"),
     )
     ragas_llm = LangchainLLMWrapper(groq_llm)
