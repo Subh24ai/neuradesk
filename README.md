@@ -160,8 +160,8 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 |---|---|
 | Ticket resolution latency (P50) | — (Week 4) |
 | Ticket resolution latency (P95) | — (Week 4) |
-| RAG faithfulness score (RAGAS)        | 1.000 (5-question eval, Groq judge) |
-| RAG answer relevancy (RAGAS)          | 0.633 (5-question eval, Groq judge) |
+| RAG faithfulness score (RAGAS)        | 1.000 (10-question eval, llama-3.1-8b-instant judge) |
+| RAG answer relevancy (RAGAS)          | 0.439 (10-question eval, llama-3.1-8b-instant judge) |
 | DSPy classifier accuracy — zero-shot  | 66.7% (10/15) |
 | DSPy classifier accuracy — compiled   | 93.3% (14/15) |
 | Concurrent users tested | — (Week 4) |
