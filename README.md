@@ -109,6 +109,12 @@ curl -s -X POST http://localhost:8000/tickets \
 pytest tests/ -v          # 111 tests
 ```
 
+**Run the load test:**
+```bash
+# Start both servers, then:
+python3 tests/load_test.py
+```
+
 ## Project Structure
 
 ```
@@ -159,23 +165,23 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 
 | Metric | Value |
 |---|---|
-| Ticket resolution latency (P50) | **4.28 s** (100-ticket load test, local SQLite + Groq) |
-| Ticket resolution latency (P95) | **4.71 s** |
+| Ticket resolution latency (P50) | 4.28s (Groq LLM) |
+| Ticket resolution latency (P95) | 4.71s (Groq LLM) |
+| Concurrent users tested | 10 (3 workers) |
+| Success rate | 100/100 |
 | RAG faithfulness score (RAGAS)        | 1.000 (10-question eval, llama-3.1-8b-instant judge) |
 | RAG answer relevancy (RAGAS)          | 0.439 (10-question eval, llama-3.1-8b-instant judge) |
 | DSPy classifier accuracy — zero-shot  | 66.7% (10/15) |
 | DSPy classifier accuracy — compiled   | 93.3% (14/15) |
-| Load test success rate | 100 / 100 tickets |
-| Concurrent workers tested | 3 |
 
-See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown.
+See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
 - ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
-- ✅ **Week 4** — React frontend ✓, GCP Cloud Run infra ✓, architecture docs ✓, 100-ticket load test ✓
+- ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
 
 ---
 
