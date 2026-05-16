@@ -179,4 +179,4 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown.
 
 ---
 
-Built by [Subhash Gupta](https://linkedin.com/in/subhashgupta) · [GitHub](https://github.com/Subh24ai/neuradesk)
+Built by [Subhash Gupta](https://linkedin.com/in/subh24ai) · [GitHub](https://github.com/Subh24ai/neuradesk)
