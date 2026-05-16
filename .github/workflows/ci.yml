@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      # Test-safe overrides — no real secrets needed for pytest.
+      LANGCHAIN_TRACING_V2: "false"
+      ENTERPRISE_API_SECRET: "test-enterprise-secret"
+      API_SECRET_KEY: "test-api-secret-key-32chars!!"
+      ENTERPRISE_API_URL: "http://localhost:8001"
+      # GROQ vars used only for the RAGAS eval step (gated below).
+      GROQ_MODEL: "llama-3.3-70b-versatile"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # ── Unit + integration tests ──────────────────────────────────────────
+      - name: pytest
+        run: pytest tests/ -v --tb=short --ignore=tests/eval_rag.py
+
+      # ── RAGAS eval (requires GROQ_API_KEY secret) ─────────────────────────
+      # Add GROQ_API_KEY under repo Settings → Secrets → Actions to enable.
+      # The step is skipped (not failed) when the secret is absent so PRs from
+      # forks without access to secrets still pass CI.
+      - name: RAGAS faithfulness eval (≥ 0.8 threshold)
+        if: ${{ env.GROQ_API_KEY != '' }}
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python tests/eval_rag.py
+
+      # ── Lint ──────────────────────────────────────────────────────────────
+      - name: ruff
+        run: ruff check .

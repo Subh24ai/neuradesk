@@ -2,8 +2,8 @@
 
 import structlog
 
-from tracing.langsmith import node_span
 from agents.state import TicketState
+from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
 
@@ -16,6 +16,7 @@ _PRIORITY_GROUP: dict[str, str] = {
 }
 
 
+@traceable(name="escalation_node", run_type="chain", metadata={"agent": "escalation", "version": "1.0"})
 def escalation_node(state: TicketState) -> TicketState:
     """Determine escalation reason and assign to the appropriate support group.
 
@@ -27,34 +28,33 @@ def escalation_node(state: TicketState) -> TicketState:
     category = state.get("category", "")
     priority = state.get("priority", "MEDIUM")
 
-    with node_span("escalation_node", {"error": error, "priority": priority, "category": category}):
-        log.info("escalation_node.start", ticket_id=state.get("ticket_id"), error=error)
+    log.info("escalation_node.start", ticket_id=state.get("ticket_id"), error=error)
 
-        # Determine the most specific reason for escalation.
-        if category == "UNKNOWN":
-            reason = "Category could not be determined."
-        elif confidence < 0.6:
-            reason = f"Triage confidence too low ({confidence:.2f} < 0.60)."
-        elif error and "confirmation" in error.lower():
-            reason = "Destructive action awaiting human confirmation."
-        elif error:
-            reason = f"Action node error: {error}"
-        else:
-            reason = "Escalated by policy."
+    # Determine the most specific reason for escalation.
+    if category == "UNKNOWN":
+        reason = "Category could not be determined."
+    elif confidence < 0.6:
+        reason = f"Triage confidence too low ({confidence:.2f} < 0.60)."
+    elif error and "confirmation" in error.lower():
+        reason = "Destructive action awaiting human confirmation."
+    elif error:
+        reason = f"Action node error: {error}"
+    else:
+        reason = "Escalated by policy."
 
-        assignee = _PRIORITY_GROUP.get(priority, "tier-1-support")
+    assignee = _PRIORITY_GROUP.get(priority, "tier-1-support")
 
-        updates: dict = {
-            "escalated": True,
-            "escalation_reason": reason,
-            "assignee_group": assignee,
-            "status": "escalated",
-        }
+    updates: dict = {
+        "escalated": True,
+        "escalation_reason": reason,
+        "assignee_group": assignee,
+        "status": "escalated",
+    }
 
-        log.info(
-            "escalation_node.done",
-            reason=reason,
-            assignee_group=assignee,
-            ticket_id=state.get("ticket_id"),
-        )
-        return {**state, **updates}  # type: ignore[return-value]
+    log.info(
+        "escalation_node.done",
+        reason=reason,
+        assignee_group=assignee,
+        ticket_id=state.get("ticket_id"),
+    )
+    return {**state, **updates}  # type: ignore[return-value]

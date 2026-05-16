@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from agents.graph import graph as langgraph_graph
 from agents.graph import run_ticket
+from api.a2a import router as a2a_router
 from api.auth import auth_router, get_current_user
 from core.dspy_config import configure_dspy
 from api.models import (
@@ -48,6 +49,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(a2a_router)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

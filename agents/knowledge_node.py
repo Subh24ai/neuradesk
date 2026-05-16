@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import RetrievedChunk, TicketState
 from core.llm import get_llm
 from rag.retriever import get_retriever
-from tracing.langsmith import node_span
+from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
 
@@ -21,6 +21,7 @@ _RESOLUTION_SYSTEM_PROMPT: str = (
 )
 
 
+@traceable(name="knowledge_node", run_type="chain", metadata={"agent": "knowledge", "version": "1.0"})
 def knowledge_node(state: TicketState) -> TicketState:
     """Retrieve relevant KB chunks and generate a resolution via LLM.
 
@@ -40,53 +41,52 @@ def knowledge_node(state: TicketState) -> TicketState:
     )[:300]
     query: str = f"{category} {ticket_text}"
 
-    with node_span("knowledge_node", {"query_preview": query[:80], "category": category}):
-        log.info("knowledge_node.start", ticket_id=state.get("ticket_id"), category=category)
+    log.info("knowledge_node.start", ticket_id=state.get("ticket_id"), category=category)
 
-        retriever = get_retriever()
-        chunks: list[RetrievedChunk] = retriever.search(query, top_k=3)
+    retriever = get_retriever()
+    chunks: list[RetrievedChunk] = retriever.search(query, top_k=3)
 
-        # No results → low confidence so the graph router escalates.
-        if not chunks:
-            log.warning("knowledge_node.empty_retrieval", query_preview=query[:80])
-            return {
-                **state,
-                "retrieved_chunks": [],
-                "confidence": 0.3,
-                "status": "acting",
-            }  # type: ignore[return-value]
-
-        # Generate a one-sentence resolution from the top-ranked chunk.
-        top_chunk = chunks[0]
-        try:
-            llm = get_llm()
-            response = llm.invoke([
-                SystemMessage(content=_RESOLUTION_SYSTEM_PROMPT),
-                HumanMessage(content=top_chunk["content"]),
-            ])
-            resolution: str = str(response.content).strip()
-        except Exception as exc:
-            log.exception("knowledge_node.llm_error", error=str(exc))
-            resolution = top_chunk["content"][:200]
-
-        # Guarantee {username} in resolution_template so the action node can
-        # always substitute the authenticated user's identity into the message.
-        resolution_template: str = (
-            resolution
-            if "{username}" in resolution
-            else f"{resolution} — Ticket raised by {{username}}."
-        )
-
-        updates: dict = {
-            "retrieved_chunks": chunks,
-            "resolution_template": resolution_template,
-            "resolution": resolution,
+    # No results → low confidence so the graph router escalates.
+    if not chunks:
+        log.warning("knowledge_node.empty_retrieval", query_preview=query[:80])
+        return {
+            **state,
+            "retrieved_chunks": [],
+            "confidence": 0.3,
             "status": "acting",
-        }
+        }  # type: ignore[return-value]
 
-        log.info(
-            "knowledge_node.done",
-            chunks_retrieved=len(chunks),
-            ticket_id=state.get("ticket_id"),
-        )
-        return {**state, **updates}  # type: ignore[return-value]
+    # Generate a one-sentence resolution from the top-ranked chunk.
+    top_chunk = chunks[0]
+    try:
+        llm = get_llm()
+        response = llm.invoke([
+            SystemMessage(content=_RESOLUTION_SYSTEM_PROMPT),
+            HumanMessage(content=top_chunk["content"]),
+        ])
+        resolution: str = str(response.content).strip()
+    except Exception as exc:
+        log.exception("knowledge_node.llm_error", error=str(exc))
+        resolution = top_chunk["content"][:200]
+
+    # Guarantee {username} in resolution_template so the action node can
+    # always substitute the authenticated user's identity into the message.
+    resolution_template: str = (
+        resolution
+        if "{username}" in resolution
+        else f"{resolution} — Ticket raised by {{username}}."
+    )
+
+    updates: dict = {
+        "retrieved_chunks": chunks,
+        "resolution_template": resolution_template,
+        "resolution": resolution,
+        "status": "acting",
+    }
+
+    log.info(
+        "knowledge_node.done",
+        chunks_retrieved=len(chunks),
+        ticket_id=state.get("ticket_id"),
+    )
+    return {**state, **updates}  # type: ignore[return-value]

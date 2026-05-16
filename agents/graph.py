@@ -20,6 +20,7 @@ from agents.escalation_node import escalation_node
 from agents.intake_node import intake_node
 from agents.knowledge_node import knowledge_node
 from agents.state import TicketState
+from tracing.langsmith import get_trace_url, print_trace_url
 
 log = structlog.get_logger(__name__)
 
@@ -99,5 +100,12 @@ def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text")
 
     log.info("graph.run_ticket.start", ticket_id=initial["ticket_id"], user_id=user_id)
     result: TicketState = graph.invoke(initial)
+
+    # Surface the LangSmith trace URL in the returned state and on stdout.
+    trace_url = get_trace_url()
+    if trace_url:
+        result = {**result, "trace_url": trace_url}  # type: ignore[assignment]
+    print_trace_url()
+
     log.info("graph.run_ticket.done", ticket_id=result["ticket_id"], status=result["status"])
     return result

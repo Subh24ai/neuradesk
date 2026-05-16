@@ -12,7 +12,7 @@ import structlog
 
 from agents.state import TicketState
 from dspy_modules.triage import classify
-from tracing.langsmith import node_span
+from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
 
@@ -148,6 +148,7 @@ def _assign_priority(category: str, text: str) -> str:
 # ── Node ──────────────────────────────────────────────────────────────────────
 
 
+@traceable(name="intake_node", run_type="chain", metadata={"agent": "intake", "version": "1.0"})
 def intake_node(state: TicketState) -> TicketState:
     """Classify the ticket, extract entities, and assign priority.
 
@@ -159,54 +160,53 @@ def intake_node(state: TicketState) -> TicketState:
     Writes: ticket_id, created_at, category, intent, priority, confidence,
             entities, extracted_text, status
     """
-    with node_span("intake_node", {"raw_text": state.get("raw_text", "")[:200]}):
-        log.info("intake_node.start", ticket_id=state.get("ticket_id"))
+    log.info("intake_node.start", ticket_id=state.get("ticket_id"))
 
-        channel: str = state.get("channel") or "text"
-        raw_text: str = state.get("raw_text") or ""
-        raw_image_b64: Optional[str] = state.get("raw_image_b64")
-        extracted_text: Optional[str] = None
+    channel: str = state.get("channel") or "text"
+    raw_text: str = state.get("raw_text") or ""
+    raw_image_b64: Optional[str] = state.get("raw_image_b64")
+    extracted_text: Optional[str] = None
 
-        # ── Vision extraction ──────────────────────────────────────────────────
-        if channel == "image" and raw_image_b64:
-            api_key = os.getenv("GROQ_API_KEY", "")
-            if not api_key:
-                log.warning(
-                    "intake_node.vision_fallback",
-                    reason="GROQ_API_KEY not set — using raw_text as extracted_text",
-                )
-                extracted_text = raw_text
-            else:
-                result = _extract_text_from_image(raw_image_b64, api_key)
-                extracted_text = result if result else raw_text
+    # ── Vision extraction ──────────────────────────────────────────────────────
+    if channel == "image" and raw_image_b64:
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            log.warning(
+                "intake_node.vision_fallback",
+                reason="GROQ_API_KEY not set — using raw_text as extracted_text",
+            )
+            extracted_text = raw_text
+        else:
+            result = _extract_text_from_image(raw_image_b64, api_key)
+            extracted_text = result if result else raw_text
 
-        # Prefer vision output over raw text for classification.
-        classify_text: str = extracted_text if extracted_text is not None else raw_text
+    # Prefer vision output over raw text for classification.
+    classify_text: str = extracted_text if extracted_text is not None else raw_text
 
-        # ── DSPy classification ────────────────────────────────────────────────
-        category, confidence = classify(classify_text)
+    # ── DSPy classification ────────────────────────────────────────────────────
+    category, confidence = classify(classify_text)
 
-        # ── Entities + priority ────────────────────────────────────────────────
-        entities = _extract_entities(classify_text)
-        priority = _assign_priority(category, classify_text)
+    # ── Entities + priority ───────────────────────────────────────────────────
+    entities = _extract_entities(classify_text)
+    priority = _assign_priority(category, classify_text)
 
-        updates: dict = {
-            "ticket_id": state.get("ticket_id") or str(uuid.uuid4()),
-            "created_at": state.get("created_at") or datetime.now(timezone.utc),
-            "category": category,
-            "intent": category,
-            "priority": priority,
-            "confidence": confidence,
-            "entities": entities,
-            "extracted_text": extracted_text,
-            "status": "retrieving",
-        }
+    updates: dict = {
+        "ticket_id": state.get("ticket_id") or str(uuid.uuid4()),
+        "created_at": state.get("created_at") or datetime.now(timezone.utc),
+        "category": category,
+        "intent": category,
+        "priority": priority,
+        "confidence": confidence,
+        "entities": entities,
+        "extracted_text": extracted_text,
+        "status": "retrieving",
+    }
 
-        log.info(
-            "intake_node.done",
-            category=category,
-            confidence=confidence,
-            priority=priority,
-            ticket_id=updates["ticket_id"],
-        )
-        return {**state, **updates}  # type: ignore[return-value]
+    log.info(
+        "intake_node.done",
+        category=category,
+        confidence=confidence,
+        priority=priority,
+        ticket_id=updates["ticket_id"],
+    )
+    return {**state, **updates}  # type: ignore[return-value]

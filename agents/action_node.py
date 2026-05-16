@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from agents.state import TicketState
-from tracing.langsmith import node_span
+from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
 
@@ -35,6 +35,7 @@ _PRIORITY_TO_SEVERITY: dict[str, str] = {
 }
 
 
+@traceable(name="_post_enterprise", run_type="tool", metadata={"layer": "enterprise_api"})
 def _post_enterprise(
     endpoint: str,
     payload: dict[str, Any],
@@ -116,6 +117,7 @@ def _build_payload(
     return {"user_id": user_id, "message": raw or "Support requested"}
 
 
+@traceable(name="action_node", run_type="chain", metadata={"agent": "action", "version": "1.0"})
 def action_node(state: TicketState) -> TicketState:
     """Execute the appropriate enterprise API call for the resolved intent.
 
@@ -133,80 +135,79 @@ def action_node(state: TicketState) -> TicketState:
     intent: str = state.get("intent") or "unknown"
     entities: dict[str, str] = state.get("entities") or {}
 
-    with node_span("action_node", {"intent": intent}):
-        log.info("action_node.start", ticket_id=state.get("ticket_id"), intent=intent)
+    log.info("action_node.start", ticket_id=state.get("ticket_id"), intent=intent)
 
-        # 1. Unknown category → escalate without any API call.
-        if intent == "unknown":
-            log.warning("action_node.unknown_intent", ticket_id=state.get("ticket_id"))
-            return {
-                **state,
-                "escalated": True,
-                "escalation_reason": "category_unknown",
-                "status": "escalated",
-            }  # type: ignore[return-value]
+    # 1. Unknown category → escalate without any API call.
+    if intent == "unknown":
+        log.warning("action_node.unknown_intent", ticket_id=state.get("ticket_id"))
+        return {
+            **state,
+            "escalated": True,
+            "escalation_reason": "category_unknown",
+            "status": "escalated",
+        }  # type: ignore[return-value]
 
-        # 2. Destructive gate — block until caller sends action_confirmed=True.
-        if intent in _DESTRUCTIVE_INTENTS and not state.get("action_confirmed"):
-            log.warning("action_node.awaiting_confirmation", intent=intent)
-            return {
-                **state,
-                "action_confirmed": False,
-                "status": "escalated",
-                "error": f"Destructive intent '{intent}' requires explicit confirmation.",
-            }  # type: ignore[return-value]
+    # 2. Destructive gate — block until caller sends action_confirmed=True.
+    if intent in _DESTRUCTIVE_INTENTS and not state.get("action_confirmed"):
+        log.warning("action_node.awaiting_confirmation", intent=intent)
+        return {
+            **state,
+            "action_confirmed": False,
+            "status": "escalated",
+            "error": f"Destructive intent '{intent}' requires explicit confirmation.",
+        }  # type: ignore[return-value]
 
-        # 3. Build username substitution context for the resolution template.
-        user_fallback: str = state.get("user_id") or "unknown"
-        fmt: dict[str, str] = {"user_id": user_fallback, "username": user_fallback}
-        for k, v in entities.items():
-            if k == "username" and v in (None, "unknown", ""):
-                continue
-            fmt[k] = str(v) if v is not None else "unknown"
+    # 3. Build username substitution context for the resolution template.
+    user_fallback: str = state.get("user_id") or "unknown"
+    fmt: dict[str, str] = {"user_id": user_fallback, "username": user_fallback}
+    for k, v in entities.items():
+        if k == "username" and v in (None, "unknown", ""):
+            continue
+        fmt[k] = str(v) if v is not None else "unknown"
 
-        resolution: str = (
-            state.get("resolution_template") or "Action completed."
-        ).format(**fmt)
+    resolution: str = (
+        state.get("resolution_template") or "Action completed."
+    ).format(**fmt)
 
-        # 4. Call enterprise API or fall back to stub for unmapped intents.
-        endpoint: str | None = _ENDPOINT_MAP.get(intent)
+    # 4. Call enterprise API or fall back to stub for unmapped intents.
+    endpoint: str | None = _ENDPOINT_MAP.get(intent)
 
-        try:
-            if endpoint:
-                base_url = os.getenv("ENTERPRISE_API_URL", "http://localhost:8001")
-                secret = os.getenv("ENTERPRISE_API_SECRET", "")
-                payload = _build_payload(intent, state, fmt)
-                action_result: dict[str, Any] = _post_enterprise(
-                    endpoint, payload, base_url, secret
-                )
-            else:
-                # Confirmed legacy destructive intent with no direct endpoint
-                # (e.g. access_revoke) — acknowledge without an API call.
-                action_result = {
-                    "status": "ok",
-                    "data": {"action": intent, "acknowledged": True},
-                }
-
-            updates: dict = {
-                "action_taken": f"{intent}_executed",
-                "action_result": action_result,
-                "action_confirmed": True,
-                "resolution": resolution,
-                "status": "resolved",
-                "error": None,
+    try:
+        if endpoint:
+            base_url = os.getenv("ENTERPRISE_API_URL", "http://localhost:8001")
+            secret = os.getenv("ENTERPRISE_API_SECRET", "")
+            payload = _build_payload(intent, state, fmt)
+            action_result: dict[str, Any] = _post_enterprise(
+                endpoint, payload, base_url, secret
+            )
+        else:
+            # Confirmed legacy destructive intent with no direct endpoint
+            # (e.g. access_revoke) — acknowledge without an API call.
+            action_result = {
+                "status": "ok",
+                "data": {"action": intent, "acknowledged": True},
             }
 
-            log.info(
-                "action_node.done",
-                action_taken=updates["action_taken"],
-                ticket_id=state.get("ticket_id"),
-            )
-            return {**state, **updates}  # type: ignore[return-value]
+        updates: dict = {
+            "action_taken": f"{intent}_executed",
+            "action_result": action_result,
+            "action_confirmed": True,
+            "resolution": resolution,
+            "status": "resolved",
+            "error": None,
+        }
 
-        except Exception as exc:
-            log.exception("action_node.error", ticket_id=state.get("ticket_id"))
-            return {
-                **state,
-                "status": "escalated",
-                "error": str(exc),
-            }  # type: ignore[return-value]
+        log.info(
+            "action_node.done",
+            action_taken=updates["action_taken"],
+            ticket_id=state.get("ticket_id"),
+        )
+        return {**state, **updates}  # type: ignore[return-value]
+
+    except Exception as exc:
+        log.exception("action_node.error", ticket_id=state.get("ticket_id"))
+        return {
+            **state,
+            "status": "escalated",
+            "error": str(exc),
+        }  # type: ignore[return-value]
