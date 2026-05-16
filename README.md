@@ -89,6 +89,7 @@ docker-compose up --build
 **Local dev without Docker (SQLite fallback):**
 ```bash
 uvicorn api.main:app --reload          # DATABASE_URL defaults to sqlite:///./neuradesk.db
+cd frontend && npm install && npm run dev   # React UI → localhost:3000
 ```
 
 **Submit your first ticket:**
@@ -158,20 +159,23 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 
 | Metric | Value |
 |---|---|
-| Ticket resolution latency (P50) | — (Week 4) |
-| Ticket resolution latency (P95) | — (Week 4) |
+| Ticket resolution latency (P50) | **4.28 s** (100-ticket load test, local SQLite + Groq) |
+| Ticket resolution latency (P95) | **4.71 s** |
 | RAG faithfulness score (RAGAS)        | 1.000 (10-question eval, llama-3.1-8b-instant judge) |
 | RAG answer relevancy (RAGAS)          | 0.439 (10-question eval, llama-3.1-8b-instant judge) |
 | DSPy classifier accuracy — zero-shot  | 66.7% (10/15) |
 | DSPy classifier accuracy — compiled   | 93.3% (14/15) |
-| Concurrent users tested | — (Week 4) |
+| Load test success rate | 100 / 100 tickets |
+| Concurrent workers tested | 3 |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown.
 
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
 - ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
-- ⬜ **Week 4** — React frontend, load testing, RAGAS benchmarks, production deployment
+- ✅ **Week 4** — React frontend ✓, GCP Cloud Run infra ✓, architecture docs ✓, 100-ticket load test ✓
 
 ---
 

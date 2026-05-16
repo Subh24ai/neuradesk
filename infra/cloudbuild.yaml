@@ -1,0 +1,70 @@
+# NeuraDesk — GCP Cloud Build CI/CD
+#
+# Required secrets (set via GCP Secret Manager before first deploy):
+#   - GROQ_API_KEY             Groq API key for LLM inference
+#   - ENTERPRISE_API_SECRET    Shared secret for the mock enterprise API
+#   - API_SECRET_KEY           JWT signing key (min 32 random chars)
+#   - DATABASE_URL             postgresql://user:pass@host:5432/neuradesk
+#
+# One-time setup:
+#   gcloud secrets create GROQ_API_KEY --data-file=- <<< "your-key"
+#   gcloud secrets create ENTERPRISE_API_SECRET --data-file=- <<< "your-secret"
+#   gcloud secrets create API_SECRET_KEY --data-file=- <<< "$(openssl rand -hex 32)"
+#   gcloud secrets create DATABASE_URL --data-file=- <<< "postgresql://..."
+#   gcloud projects add-iam-policy-binding $PROJECT_ID \
+#       --member="serviceAccount:$BUILD_SA" \
+#       --role="roles/secretmanager.secretAccessor"
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: neuradesk
+  _REPO: neuradesk          # Artifact Registry repo name
+  _IMAGE: neuradesk-api
+
+steps:
+  # ── 1. Build the multi-stage Docker image ──────────────────────────────────
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args:
+      - build
+      - --file=infra/Dockerfile
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+      - --cache-from=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+      - .
+
+  # ── 2. Push to Artifact Registry ──────────────────────────────────────────
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    waitFor: [build]
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}
+
+  # ── 3. Deploy to Cloud Run ─────────────────────────────────────────────────
+  - name: gcr.io/cloud-builders/gcloud
+    id: deploy
+    waitFor: [push]
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --min-instances=0
+      - --max-instances=10
+      - --memory=2Gi
+      - --cpu=2
+      - --timeout=300
+      - --set-secrets=GROQ_API_KEY=GROQ_API_KEY:latest,ENTERPRISE_API_SECRET=ENTERPRISE_API_SECRET:latest,API_SECRET_KEY=API_SECRET_KEY:latest,DATABASE_URL=DATABASE_URL:latest
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
