@@ -19,8 +19,10 @@ Metrics collected during development.  Week 4 targets include load-test numbers 
 | Metric | Value |
 |---|---|
 | RAG faithfulness score    | 1.000 (10-question eval, llama-3.1-8b-instant judge) |
-| RAG answer relevancy      | 0.439 (10-question eval, llama-3.1-8b-instant judge) |
-| Eval set                  | 2 questions × 5 categories, serial execution         |
+| RAG answer relevancy      | 0.439 (10-question eval)                             |
+| Eval methodology          | RAGAS, Groq LLM judge, HuggingFace embeddings,       |
+|                           | max_workers=1, nan-safe aggregation                  |
+| Eval set                  | 2 questions × 5 categories                          |
 | Corpus size               | 10 documents, 50 chunks                              |
 | Dense retriever | FAISS + all-MiniLM-L6-v2 |
 | Sparse retriever | BM25Okapi |
