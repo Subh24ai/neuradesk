@@ -160,15 +160,16 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 |---|---|
 | Ticket resolution latency (P50) | — (Week 4) |
 | Ticket resolution latency (P95) | — (Week 4) |
-| RAG faithfulness score (RAGAS) | — (Week 4) |
-| DSPy classifier accuracy — zero-shot | — (Week 4) |
-| DSPy classifier accuracy — compiled | — (Week 4) |
+| RAG faithfulness score (RAGAS)        | 1.000 (5-question eval, Groq judge) |
+| RAG answer relevancy (RAGAS)          | 0.633 (5-question eval, Groq judge) |
+| DSPy classifier accuracy — zero-shot  | 66.7% (10/15) |
+| DSPy classifier accuracy — compiled   | 93.3% (14/15) |
 | Concurrent users tested | — (Week 4) |
 
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
-- ✅ **Week 2** — RAG pipeline ✓, DSPy classifier ✓ (93.3%), all agents live ✓ — 80 tests green
+- ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
 - ⬜ **Week 3** — A2A protocol, LangSmith tracing depth, CI/CD on GCP Cloud Run
 - ⬜ **Week 4** — React frontend, load testing, RAGAS benchmarks, production deployment
 

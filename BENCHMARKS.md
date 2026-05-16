@@ -18,9 +18,9 @@ Metrics collected during development.  Week 4 targets include load-test numbers 
 
 | Metric | Value |
 |---|---|
-| RAG faithfulness (RAGAS) | — (Week 4) |
-| RAG answer relevancy (RAGAS) | — (Week 4) |
-| Knowledge base | 10 documents, ~50 paragraph chunks |
+| RAG faithfulness score    | 1.000 (5-question eval, Groq judge) |
+| RAG answer relevancy      | 0.633 (5-question eval, Groq judge) |
+| Corpus size               | 10 documents, 50 chunks             |
 | Dense retriever | FAISS + all-MiniLM-L6-v2 |
 | Sparse retriever | BM25Okapi |
 | Reranker | cross-encoder/ms-marco-MiniLM-L-6-v2 |
@@ -37,5 +37,5 @@ Metrics collected during development.  Week 4 targets include load-test numbers 
 
 | Metric | Value |
 |---|---|
-| Tests passing | 59 |
+| Tests passing | 80 |
 | Concurrent users tested | — (Week 4) |
