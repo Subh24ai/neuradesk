@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-111%20passing-brightgreen)](tests/)
 
 ## Demo
 
@@ -105,7 +105,7 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 33 tests, ~2.5 s
+pytest tests/ -v          # 111 tests
 ```
 
 ## Project Structure
@@ -123,7 +123,7 @@ neuradesk/
 ├── services/            # Mock ITSM/HR endpoints + async JSON-lines audit log
 ├── rag/                 # Retriever (Week 2)
 ├── dspy_modules/        # DSPy signatures and compiled classifiers (Week 2)
-├── tracing/             # LangSmith singleton client and per-node span helper
+├── tracing/             # LangSmith @traceable helpers, trace URL utilities
 ├── tests/               # pytest suite — graph logic, API routes, enterprise API
 ├── infra/               # Dockerfile, GCP Cloud Run config
 └── docker-compose.yml   # PostgreSQL · backend · enterprise mock API
@@ -170,7 +170,7 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
 - ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
-- ⬜ **Week 3** — A2A protocol, LangSmith tracing depth, CI/CD on GCP Cloud Run
+- ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
 - ⬜ **Week 4** — React frontend, load testing, RAGAS benchmarks, production deployment
 
 ---
