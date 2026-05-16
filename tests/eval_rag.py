@@ -11,10 +11,17 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+
+# Allow running from any working directory: python tests/eval_rag.py
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Disable LangSmith tracing for this standalone eval script.
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 # Validate GROQ_API_KEY before importing heavy dependencies.
 if not os.getenv("GROQ_API_KEY"):
@@ -23,8 +30,10 @@ if not os.getenv("GROQ_API_KEY"):
 
 try:
     from datasets import Dataset
+    from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_groq import ChatGroq
     from ragas import evaluate
+    from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
     from ragas.metrics import answer_relevancy, faithfulness
 except ImportError as exc:
@@ -92,12 +101,22 @@ def main() -> None:
         }
     )
 
-    # Configure RAGAS to use Groq instead of OpenAI.
+    # Configure RAGAS to use Groq (LLM) and local sentence-transformers (embeddings)
+    # so no OpenAI key is required.
     groq_llm = ChatGroq(
         model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         api_key=os.getenv("GROQ_API_KEY"),
     )
     ragas_llm = LangchainLLMWrapper(groq_llm)
+    ragas_embeddings = LangchainEmbeddingsWrapper(
+        HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    )
+
+    # Explicitly bind LLM/embeddings on each metric so RAGAS never falls back
+    # to its OpenAI defaults (which would cause 401s if no OPENAI_API_KEY is set).
+    faithfulness.llm = ragas_llm
+    answer_relevancy.llm = ragas_llm
+    answer_relevancy.embeddings = ragas_embeddings
 
     print("Running RAGAS evaluation (faithfulness + answer_relevancy) …\n")
     try:
@@ -105,6 +124,7 @@ def main() -> None:
             dataset,
             metrics=[faithfulness, answer_relevancy],
             llm=ragas_llm,
+            embeddings=ragas_embeddings,
         )
         print(result)
     except Exception as exc:

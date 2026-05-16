@@ -168,7 +168,7 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
-- ✅ **Week 2** (in progress) — RAG pipeline ✓, DSPy classifier ✓ (93.3% accuracy), real agent logic
+- ✅ **Week 2** — RAG pipeline ✓, DSPy classifier ✓ (93.3%), all agents live ✓ — 80 tests green
 - ⬜ **Week 3** — A2A protocol, LangSmith tracing depth, CI/CD on GCP Cloud Run
 - ⬜ **Week 4** — React frontend, load testing, RAGAS benchmarks, production deployment
 
