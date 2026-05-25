@@ -62,7 +62,6 @@ const BASE_STEPS: { node: string }[] = [
 ]
 
 const MAX_RETRIES = 3
-const RETRY_DELAY_MS = 2000
 
 function CheckIcon() {
   return (
@@ -128,7 +127,8 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
   const [escalationStep, setEscalationStep] = useState<Step | null>(null)
   const [isComplete, setIsComplete] = useState(false)
   const [wsError, setWsError] = useState<string | null>(null)
-  const [retryCount, setRetryCount] = useState(0)
+  const [isReconnecting, setIsReconnecting] = useState(false)
+  const retryRef = useRef(0)
   const finalRef = useRef<FinalResult>({})
   const [finalSnapshot, setFinalSnapshot] = useState<FinalResult>({})
   const resolvedRef = useRef(false)
@@ -182,11 +182,37 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
     ws.onclose = (ev) => {
       if (resolvedRef.current) return
       if (ev.code === 1000 || ev.code === 1008) { setWsError('Connection closed unexpectedly.'); return }
-      setRetryCount((prev) => {
-        if (prev >= MAX_RETRIES) { setWsError('Connection lost after multiple retries. Please try again.'); return prev }
-        setTimeout(connect, RETRY_DELAY_MS * (prev + 1))
-        return prev + 1
-      })
+      if (retryRef.current >= MAX_RETRIES) {
+        setWsError('Connection lost — your ticket is still processing. Check back in ticket history.')
+        return
+      }
+      const delay = 1000 * Math.pow(2, retryRef.current)  // 1s → 2s → 4s
+      retryRef.current += 1
+      setIsReconnecting(true)
+      setTimeout(() => {
+        fetch(`/tickets/${ticketId}`, { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data: FinalResult & { status?: string } | null) => {
+            // If the ticket already finished while we were disconnected, surface it immediately.
+            const done = data?.status && !['pending', 'triaging', 'retrieving', 'acting'].includes(data.status)
+            if (done && data) {
+              setFinalSnapshot({
+                resolution: data.resolution,
+                status: data.status,
+                escalation_reason: data.escalation_reason,
+                assignee_group: data.assignee_group,
+                trace_url: data.trace_url,
+              })
+              resolvedRef.current = true
+              setIsComplete(true)
+              setIsReconnecting(false)
+              return
+            }
+            setIsReconnecting(false)
+            connect()
+          })
+          .catch(() => { setIsReconnecting(false); connect() })
+      }, delay)
     }
   }, [ticketId, text, token, imageB64])
 
@@ -271,13 +297,13 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
               <p className="text-white font-semibold text-sm leading-snug line-clamp-2">{text}</p>
             </div>
             <div className="flex-shrink-0 mt-0.5">
-              {!isComplete && !wsError && retryCount === 0 && (
+              {!isComplete && !wsError && !isReconnecting && (
                 <span className="inline-flex items-center gap-1.5 bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-2.5 py-1 rounded-full tabular-nums">
                   <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
                   {liveElapsed > 0 ? `${liveElapsed}s` : 'Running'}
                 </span>
               )}
-              {!isComplete && retryCount > 0 && (
+              {!isComplete && isReconnecting && (
                 <span className="inline-flex items-center gap-1.5 bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-2.5 py-1 rounded-full">
                   <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
                   Reconnecting…

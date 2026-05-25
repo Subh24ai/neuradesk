@@ -4,6 +4,7 @@ import structlog
 
 from agents.state import TicketState
 from api.email import send_escalation_alert, send_ticket_notification
+from notifications.slack import send_slack_escalation
 from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
@@ -114,3 +115,17 @@ def _send_escalation_notifications(
             )
     except Exception as exc:
         log.warning("escalation_node.user_email_failed", ticket_id=ticket_id, error=str(exc))
+
+    slack_webhook_url: str = state.get("slack_webhook_url") or ""
+    try:
+        if slack_webhook_url:
+            send_slack_escalation(
+                webhook_url=slack_webhook_url,
+                ticket_id=ticket_id,
+                reason=reason,
+                assignee_group=assignee,
+                priority=priority,
+                org_name=org_name,
+            )
+    except Exception as exc:
+        log.warning("escalation_node.slack_failed", ticket_id=ticket_id, error=str(exc))

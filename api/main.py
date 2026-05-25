@@ -297,6 +297,7 @@ def confirm_action(
     org_api_secret: Optional[str] = None
     org_name: str = ""
     support_email: str = os.getenv("SUPPORT_EMAIL", "")
+    slack_webhook_url: Optional[str] = None
     if ticket.org_id:
         kb_rows = (
             db.query(OrgKnowledgeDocModel)
@@ -307,6 +308,7 @@ def confirm_action(
         org_cfg = db.get(OrgConfigModel, ticket.org_id)
         if org_cfg:
             org_api_url = org_cfg.itsm_url or None
+            slack_webhook_url = org_cfg.slack_webhook_url or None
         org_obj = db.get(OrganizationModel, ticket.org_id)
         org_name = org_obj.name if org_obj else ""
 
@@ -320,7 +322,7 @@ def confirm_action(
         raw_image_b64=ticket.raw_image_b64,
         support_email=support_email,
         user_email=current_user.email,
-        slack_webhook_url=None,
+        slack_webhook_url=slack_webhook_url,
     )
     initial_state["action_confirmed"] = True  # type: ignore[index]
 
@@ -483,6 +485,7 @@ async def websocket_ticket(
         org_api_secret: Optional[str] = None
         org_name: str = ""
         support_email: str = os.getenv("SUPPORT_EMAIL", "")
+        slack_webhook_url: Optional[str] = None
         if ticket.org_id:
             kb_rows = (
                 db.query(OrgKnowledgeDocModel)
@@ -495,6 +498,7 @@ async def websocket_ticket(
                 org_api_url = org_cfg.itsm_url or None
                 org_api_secret = None  # secret managed server-side only
                 support_email = org_cfg.smtp_host and support_email or support_email
+                slack_webhook_url = org_cfg.slack_webhook_url or None
             org_obj = db.get(OrganizationModel, ticket.org_id)
             org_name = org_obj.name if org_obj else ""
 
@@ -508,7 +512,7 @@ async def websocket_ticket(
             raw_image_b64=ticket.raw_image_b64,
             support_email=support_email,
             user_email=owner.email if owner else "",
-            slack_webhook_url=None,  # wired in Fix 8
+            slack_webhook_url=slack_webhook_url,
         )
         final_state: dict = {}
 

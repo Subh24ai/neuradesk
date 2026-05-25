@@ -185,3 +185,46 @@ class TestEscalationNotifications:
         # Neither email function was called
         mock_alert.assert_not_called()
         mock_notify.assert_not_called()
+
+
+# ── Slack notification tests ──────────────────────────────────────────────────
+
+
+class TestSlackNotifications:
+    """Tests for the Slack webhook side-effect of escalation_node."""
+
+    def test_slack_sent_on_escalation(self) -> None:
+        """When slack_webhook_url is set, send_slack_escalation is called with correct args."""
+        state = _base_state(
+            priority="HIGH",
+            slack_webhook_url="https://hooks.slack.com/services/T00/B00/XXXX",
+            org_name="Corp Inc",
+        )
+        with (
+            patch("agents.escalation_node.send_escalation_alert"),
+            patch("agents.escalation_node.send_ticket_notification"),
+            patch("agents.escalation_node.send_slack_escalation") as mock_slack,
+        ):
+            result = escalation_node(state)
+
+        assert result["escalated"] is True
+        mock_slack.assert_called_once()
+        kwargs = mock_slack.call_args.kwargs
+        assert kwargs["webhook_url"] == "https://hooks.slack.com/services/T00/B00/XXXX"
+        assert kwargs["ticket_id"] == "test-escalation-001"
+        assert kwargs["assignee_group"] == "tier-2-support"
+        assert kwargs["priority"] == "HIGH"
+        assert kwargs["org_name"] == "Corp Inc"
+
+    def test_slack_skipped_when_no_url(self) -> None:
+        """When slack_webhook_url is None, send_slack_escalation is not called."""
+        state = _base_state(slack_webhook_url=None)
+        with (
+            patch("agents.escalation_node.send_escalation_alert"),
+            patch("agents.escalation_node.send_ticket_notification"),
+            patch("agents.escalation_node.send_slack_escalation") as mock_slack,
+        ):
+            result = escalation_node(state)
+
+        assert result["escalated"] is True
+        mock_slack.assert_not_called()

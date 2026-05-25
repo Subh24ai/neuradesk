@@ -71,6 +71,7 @@ class OrgConfigModel(Base):
     smtp_pass: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     smtp_port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     custom_categories: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    slack_webhook_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
 
 class UserModel(Base):
