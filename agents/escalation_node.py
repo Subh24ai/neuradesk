@@ -3,6 +3,7 @@
 import structlog
 
 from agents.state import TicketState
+from api.email import send_escalation_alert, send_ticket_notification
 from tracing.langsmith import traceable
 
 log = structlog.get_logger(__name__)
@@ -57,4 +58,59 @@ def escalation_node(state: TicketState) -> TicketState:
         assignee_group=assignee,
         ticket_id=state.get("ticket_id"),
     )
+
+    _send_escalation_notifications(state, reason, assignee, priority)
+
     return {**state, **updates}  # type: ignore[return-value]
+
+
+def _send_escalation_notifications(
+    state: TicketState,
+    reason: str,
+    assignee: str,
+    priority: str,
+) -> None:
+    """Fire support-team and user emails; log warnings on failure, never raise."""
+    ticket_id: str = state.get("ticket_id") or ""
+    support_email: str = state.get("support_email") or ""
+    user_email: str = state.get("user_email") or ""
+    org_name: str = state.get("org_name") or state.get("org_id") or "Unknown org"
+
+    try:
+        if support_email:
+            send_escalation_alert(
+                ticket_id=ticket_id,
+                reason=reason,
+                assignee_group=assignee,
+                priority=priority,
+                org_name=org_name,
+                support_email=support_email,
+            )
+        else:
+            log.warning(
+                "escalation_node.no_support_email",
+                ticket_id=ticket_id,
+                hint="Set SUPPORT_EMAIL env var or configure org SMTP to receive escalation alerts",
+            )
+    except Exception as exc:
+        log.warning("escalation_node.support_email_failed", ticket_id=ticket_id, error=str(exc))
+
+    try:
+        if user_email:
+            send_ticket_notification(
+                email=user_email,
+                ticket_id=ticket_id,
+                status="escalated",
+                resolution=None,
+                escalation_reason=reason,
+                priority=priority,
+                assignee_group=assignee,
+            )
+        else:
+            log.warning(
+                "escalation_node.no_user_email",
+                ticket_id=ticket_id,
+                hint="user_email not in state — user will not receive an escalation notification",
+            )
+    except Exception as exc:
+        log.warning("escalation_node.user_email_failed", ticket_id=ticket_id, error=str(exc))

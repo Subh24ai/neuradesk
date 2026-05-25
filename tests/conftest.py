@@ -11,6 +11,8 @@ os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("ENTERPRISE_API_SECRET", "test-enterprise-secret")
 os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-32chars!!")
 os.environ.setdefault("ENTERPRISE_API_URL", "http://localhost:8001")
+# Force empty so org creation is unrestricted in tests; monkeypatch overrides as needed.
+os.environ["ORG_CREATION_SECRET"] = ""
 
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -20,8 +22,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from api.auth import hash_password
 from api.main import app
-from api.models import Base, get_db
+from api.models import Base, OrganizationModel, UserModel, get_db
 
 # ── Fixed TicketState returned by mock_run_ticket ─────────────────────────────
 
@@ -102,18 +105,34 @@ def test_client(override_db) -> TestClient:
 
 
 @pytest.fixture(scope="function")
-def auth_client(override_db) -> TestClient:
+def auth_client(override_db, db_engine) -> TestClient:
     """FastAPI TestClient with a valid JWT pre-set in the Authorization header.
 
-    Registers 'auth-fixture@neuradesk.ai' and stores the token in the
-    session headers so every request is automatically authenticated as that user.
+    Inserts 'auth-fixture@neuradesk.ai' directly into the DB as an already-verified
+    user (bypassing the OTP flow) then logs in to obtain a token.
     """
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
+    db = TestingSessionLocal()
+    org = OrganizationModel(name="Fixture Org", slug="fixture-org", invite_code="fixture-invite-code-123")
+    db.add(org)
+    db.flush()
+    user = UserModel(
+        email="auth-fixture@neuradesk.ai",
+        hashed_password=hash_password("testpassword99"),
+        is_verified=True,
+        org_id=org.id,
+        role="admin",
+    )
+    db.add(user)
+    db.commit()
+    db.close()
+
     client = TestClient(app)
     r = client.post(
-        "/auth/register",
+        "/auth/login",
         json={"email": "auth-fixture@neuradesk.ai", "password": "testpassword99"},
     )
-    assert r.status_code == 201, f"auth_client fixture registration failed: {r.text}"
+    assert r.status_code == 200, f"auth_client fixture login failed: {r.text}"
     token = r.json()["access_token"]
     client.headers.update({"Authorization": f"Bearer {token}"})
     return client

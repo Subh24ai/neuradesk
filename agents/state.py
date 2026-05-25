@@ -54,6 +54,16 @@ class TicketState(TypedDict):
     escalation_reason: Optional[str]
     assignee_group: Optional[str]
 
+    # ── Org context (populated before graph run from DB) ──────────────────
+    org_id: Optional[str]
+    org_name: Optional[str]             # human-readable org name for notifications
+    org_kb_docs: Optional[list[dict]]   # [{title, content}] from OrgKnowledgeDocModel
+    org_api_url: Optional[str]          # per-org enterprise API base URL override
+    org_api_secret: Optional[str]       # per-org enterprise API secret override
+    support_email: Optional[str]        # support team email for escalation alerts
+    user_email: Optional[str]           # submitting user's email for notifications
+    slack_webhook_url: Optional[str]    # org Slack webhook URL for escalation alerts
+
     # ── Graph control ─────────────────────────────────────────────────────
     status: Literal["triaging", "retrieving", "acting", "resolved", "escalated"]
     error: Optional[str]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
@@ -35,6 +36,9 @@ _PRIORITY_TO_SEVERITY: dict[str, str] = {
 }
 
 
+_RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
+
+
 @traceable(name="_post_enterprise", run_type="tool", metadata={"layer": "enterprise_api"})
 def _post_enterprise(
     endpoint: str,
@@ -42,29 +46,33 @@ def _post_enterprise(
     base_url: str,
     secret: str,
 ) -> dict[str, Any]:
-    """POST payload to the enterprise API and return the parsed JSON response.
+    """POST payload to the enterprise API with exponential-backoff retry.
 
-    Args:
-        endpoint: Path component, e.g. "/itsm/reset-password".
-        payload: Request body dict (will be JSON-serialised).
-        base_url: Enterprise API base URL, e.g. "http://localhost:8001".
-        secret: Bearer token for Authorization header.
-
-    Returns:
-        Parsed JSON response body.
-
-    Raises:
-        httpx.HTTPStatusError: On non-2xx responses.
-        httpx.RequestError: On network-level failures.
+    Retries up to 3 times on transient network/timeout errors.
+    4xx client errors are not retried.
     """
-    with httpx.Client(timeout=10.0) as client:
-        resp = client.post(
-            f"{base_url}{endpoint}",
-            json=payload,
-            headers={"Authorization": f"Bearer {secret}"},
-        )
-        resp.raise_for_status()
-        return resp.json()
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate([(0.0)] + _RETRY_DELAYS, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(
+                    f"{base_url}{endpoint}",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {secret}"},
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise  # 4xx — no retry
+            last_exc = exc
+            log.warning("action_node.retry", attempt=attempt, status=exc.response.status_code, endpoint=endpoint)
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            last_exc = exc
+            log.warning("action_node.retry", attempt=attempt, error=str(exc), endpoint=endpoint)
+    raise last_exc  # type: ignore[misc]
 
 
 def _build_payload(
@@ -174,8 +182,8 @@ def action_node(state: TicketState) -> TicketState:
 
     try:
         if endpoint:
-            base_url = os.getenv("ENTERPRISE_API_URL", "http://localhost:8001")
-            secret = os.getenv("ENTERPRISE_API_SECRET", "")
+            base_url = state.get("org_api_url") or os.getenv("ENTERPRISE_API_URL", "http://localhost:8001")
+            secret = state.get("org_api_secret") or os.getenv("ENTERPRISE_API_SECRET", "")
             payload = _build_payload(intent, state, fmt)
             action_result: dict[str, Any] = _post_enterprise(
                 endpoint, payload, base_url, secret

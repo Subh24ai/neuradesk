@@ -88,7 +88,8 @@ docker-compose up --build
 
 **Local dev without Docker (SQLite fallback):**
 ```bash
-uvicorn api.main:app --reload          # DATABASE_URL defaults to sqlite:///./neuradesk.db
+uvicorn api.main:app --reload --port 8001      #NeuraDesk Backend    # DATABASE_URL defaults to sqlite:///./neuradesk.db
+uvicorn services.enterprise_api:app --port 8002 --reload #Mock HR/IT?IAM APIs
 cd frontend && npm install && npm run dev   # React UI → localhost:3000
 ```
 
@@ -113,6 +114,22 @@ pytest tests/ -v          # 111 tests
 ```bash
 # Start both servers, then:
 python3 tests/load_test.py
+```
+
+
+***Option 1 — Docker (recommended, one command):***
+```
+  docker-compose up --build
+  # Backend → localhost:8000 | Mock enterprise API → localhost:8001
+  
+```
+***Option 2 — Local dev (two terminals):***
+```
+  Terminal 1 — Backend:
+  uvicorn api.main:app --reload --port 8001
+
+  Terminal 2 — Frontend:
+  cd frontend && npm install && npm run dev
 ```
 
 ## Project Structure

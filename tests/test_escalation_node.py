@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +39,14 @@ def _base_state(**overrides) -> TicketState:
         "escalated": None,
         "escalation_reason": None,
         "assignee_group": None,
+        "org_id": "test-org-001",
+        "org_name": "Test Corp",
+        "org_kb_docs": [],
+        "org_api_url": None,
+        "org_api_secret": None,
+        "support_email": "",
+        "user_email": "",
+        "slack_webhook_url": None,
         "status": "escalated",
         "error": None,
         "trace_url": None,
@@ -117,3 +126,62 @@ class TestEscalationNode:
         result = escalation_node(state)
         assert result["raw_text"] == "cannot log in"
         assert result["entities"] == {"username": "jdoe"}
+
+
+# ── Notification tests ────────────────────────────────────────────────────────
+
+
+class TestEscalationNotifications:
+    """Tests for the email notification side-effects of escalation_node."""
+
+    def test_escalation_sends_alert(self) -> None:
+        """When support_email and user_email are set, both email functions are called."""
+        state = _base_state(
+            priority="HIGH",
+            support_email="support@corp.com",
+            user_email="alice@corp.com",
+            org_name="Corp Inc",
+        )
+        with (
+            patch("agents.escalation_node.send_escalation_alert") as mock_alert,
+            patch("agents.escalation_node.send_ticket_notification") as mock_notify,
+        ):
+            result = escalation_node(state)
+
+        # Node still returns correct escalation fields
+        assert result["escalated"] is True
+        assert result["assignee_group"] == "tier-2-support"
+
+        # Support team alert fired with correct args
+        mock_alert.assert_called_once()
+        alert_kwargs = mock_alert.call_args.kwargs
+        assert alert_kwargs["support_email"] == "support@corp.com"
+        assert alert_kwargs["ticket_id"] == "test-escalation-001"
+        assert alert_kwargs["assignee_group"] == "tier-2-support"
+        assert alert_kwargs["priority"] == "HIGH"
+        assert alert_kwargs["org_name"] == "Corp Inc"
+
+        # User notification fired with escalated status and response-time args
+        mock_notify.assert_called_once()
+        notify_kwargs = mock_notify.call_args.kwargs
+        assert notify_kwargs["email"] == "alice@corp.com"
+        assert notify_kwargs["status"] == "escalated"
+        assert notify_kwargs["priority"] == "HIGH"
+        assert notify_kwargs["assignee_group"] == "tier-2-support"
+
+    def test_escalation_skips_gracefully_when_no_smtp(self) -> None:
+        """When support_email and user_email are empty, no email calls are made and node succeeds."""
+        state = _base_state(support_email="", user_email="")
+        with (
+            patch("agents.escalation_node.send_escalation_alert") as mock_alert,
+            patch("agents.escalation_node.send_ticket_notification") as mock_notify,
+        ):
+            result = escalation_node(state)
+
+        # Node completed without raising
+        assert result["status"] == "escalated"
+        assert result["escalated"] is True
+
+        # Neither email function was called
+        mock_alert.assert_not_called()
+        mock_notify.assert_not_called()

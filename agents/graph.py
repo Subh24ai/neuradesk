@@ -65,19 +65,29 @@ def build_graph() -> StateGraph:
 graph = build_graph()
 
 
-def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text") -> TicketState:
-    """Submit a ticket through the full graph and return the final state.
-
-    This is the single entry point used by the API and smoke tests.
-    """
-    initial: TicketState = {  # type: ignore[assignment]
+def build_initial_state(
+    raw_text: str,
+    user_id: str = "anonymous",
+    channel: str = "text",
+    org_id: str | None = None,
+    org_name: str | None = None,
+    org_kb_docs: list[dict] | None = None,
+    org_api_url: str | None = None,
+    org_api_secret: str | None = None,
+    raw_image_b64: str | None = None,
+    support_email: str | None = None,
+    user_email: str | None = None,
+    slack_webhook_url: str | None = None,
+) -> TicketState:
+    """Construct a blank TicketState ready to be fed into the graph."""
+    return {  # type: ignore[return-value]
         "ticket_id": str(uuid.uuid4()),
         "user_id": user_id,
-        "created_at": None,  # intake_node fills this in
+        "created_at": None,
         "trace_id": str(uuid.uuid4()),
         "channel": channel,  # type: ignore[arg-type]
         "raw_text": raw_text,
-        "raw_image_b64": None,
+        "raw_image_b64": raw_image_b64,
         "extracted_text": None,
         "category": None,
         "intent": None,
@@ -93,10 +103,26 @@ def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text")
         "escalated": None,
         "escalation_reason": None,
         "assignee_group": None,
+        "org_id": org_id,
+        "org_name": org_name,
+        "org_kb_docs": org_kb_docs or [],
+        "org_api_url": org_api_url,
+        "org_api_secret": org_api_secret,
+        "support_email": support_email,
+        "user_email": user_email,
+        "slack_webhook_url": slack_webhook_url,
         "status": "triaging",
         "error": None,
         "trace_url": None,
     }
+
+
+def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text") -> TicketState:
+    """Submit a ticket through the full graph and return the final state.
+
+    Used by smoke tests and any non-streaming callers.
+    """
+    initial = build_initial_state(raw_text, user_id, channel)
 
     log.info("graph.run_ticket.start", ticket_id=initial["ticket_id"], user_id=user_id)
     result: TicketState = graph.invoke(initial)
