@@ -20,7 +20,7 @@ from agents.graph import build_initial_state, graph as langgraph_graph
 from storage.gcs import upload_image_b64
 from tracing.langsmith import get_trace_url
 from api.a2a import router as a2a_router
-from api.admin import admin_router
+from api.admin import admin_router, _publish_sse
 from api.auth import auth_router, _decode_token, get_current_user
 from api.email import send_ticket_notification
 from api.org import org_router
@@ -548,6 +548,18 @@ async def websocket_ticket(
         ticket.trace_url = trace_url
         db.commit()
         log.info("ws.ticket.saved", ticket_id=ticket_id, status=ticket.status)
+
+        if ticket.org_id:
+            _publish_sse(ticket.org_id, {
+                "ticket_id": ticket.id,
+                "status": ticket.status,
+                "category": ticket.category,
+                "resolution": ticket.resolution,
+                "escalation_reason": ticket.escalation_reason,
+                "user_email": owner.email if owner else None,
+                "priority": ticket.priority,
+                "assignee_group": ticket.assignee_group,
+            })
 
         # Notify the owner when their ticket is resolved.
         # Escalated tickets are notified directly from escalation_node (Fix 1)

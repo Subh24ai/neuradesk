@@ -748,6 +748,43 @@ class TestImagePersistence:
         assert get_r.json()["image_url"] == fake_url
 
 
+class TestAdminSSE:
+    """GET /admin/stream SSE endpoint."""
+
+    def test_sse_missing_token_returns_422(self, test_client) -> None:
+        """SSE endpoint requires token query param — omitting it returns 422."""
+        r = test_client.get("/admin/stream")
+        assert r.status_code == 422
+
+    def test_sse_invalid_token_returns_401(self, test_client) -> None:
+        """Malformed JWT in token query param returns 401."""
+        r = test_client.get("/admin/stream", params={"token": "garbage.jwt.value"})
+        assert r.status_code == 401
+
+    def test_sse_non_admin_returns_403(self, test_client) -> None:
+        """Member (non-admin) token returns 403."""
+        admin_token = _register_and_verify(test_client, "sse_adm@acme.ai", "password123", "SseOrgA")
+        member_token = _register_member(test_client, admin_token, "sse_mem@acme.ai", "password123")
+        r = test_client.get("/admin/stream", params={"token": member_token})
+        assert r.status_code == 403
+
+    def test_sse_admin_gets_event_stream(self, test_client) -> None:
+        """Valid admin token → 200 text/event-stream; first event is a ping."""
+        token = _register_and_verify(test_client, "sse_adm2@acme.ai", "password123", "SseOrgB")
+
+        # Patch _sse_event_stream with a finite one-shot generator so test_client.get()
+        # returns cleanly instead of blocking forever on an infinite stream.
+        async def _one_ping(org_id: str, q: object):
+            yield "event: ping\ndata: {}\n\n"
+
+        with patch("api.admin._sse_event_stream", side_effect=_one_ping):
+            r = test_client.get("/admin/stream", params={"token": token})
+
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers["content-type"]
+        assert b"ping" in r.content
+
+
 class TestHealth:
     """GET /health liveness probe."""
 

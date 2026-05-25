@@ -984,6 +984,7 @@ export default function AdminDashboard({ token, onNewTicket, onToast }: Props) {
   const [loading, setLoading] = useState(true)
   const [expandedTicket, setExpandedTicket] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'escalated' | 'tickets' | 'members' | 'invites' | 'kb'>('escalated')
+  const sseRef = useRef<EventSource | null>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
   const LIMIT = 20
@@ -1000,6 +1001,31 @@ export default function AdminDashboard({ token, onNewTicket, onToast }: Props) {
   }
 
   useEffect(() => {
+    // JWT in query param required — EventSource API has no header support. Acceptable for internal enterprise tool.
+    const sse = new EventSource(`/admin/stream?token=${encodeURIComponent(token)}`)
+    sseRef.current = sse
+
+    sse.onmessage = (e: MessageEvent) => {
+      try {
+        const ticket: TicketRow = JSON.parse(e.data as string)
+        setTickets(prev => {
+          const idx = prev.findIndex(t => t.ticket_id === ticket.ticket_id)
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = { ...prev[idx], ...ticket }
+            return next
+          }
+          return [ticket, ...prev]
+        })
+        fetch('/admin/stats', { headers })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => d && setStats(d as Stats))
+        if (ticket.status === 'escalated') {
+          onToast?.(`New escalation from ${ticket.user_email ?? 'unknown user'}`, 'error')
+        }
+      } catch { /* ignore malformed events */ }
+    }
+
     async function load() {
       setLoading(true)
       const [orgR, statsR, membersR, invitesR] = await Promise.all([
@@ -1016,6 +1042,11 @@ export default function AdminDashboard({ token, onNewTicket, onToast }: Props) {
       setLoading(false)
     }
     load()
+
+    return () => {
+      sse.close()
+      sseRef.current = null
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 

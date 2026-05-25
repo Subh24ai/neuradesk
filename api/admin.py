@@ -1,15 +1,18 @@
 """Admin-only endpoints — org-wide ticket views, resolution, comments, knowledge base, and invites."""
 
+import asyncio
 import io
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from api.auth import get_current_user
+from api.auth import _decode_token, get_current_user
 from rag.retriever import get_retriever
 from api.models import (
     CommentCreate,
@@ -28,6 +31,7 @@ from api.models import (
     TicketModel,
     TicketResolveRequest,
     TicketResponse,
+    TokenBlocklistModel,
     UserModel,
     get_db,
 )
@@ -35,6 +39,26 @@ from api.models import (
 log = structlog.get_logger(__name__)
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+# ── SSE state ─────────────────────────────────────────────────────────────────
+
+_admin_sse_queues: dict[str, list[asyncio.Queue[str]]] = {}
+
+
+def _publish_sse(org_id: str, event_data: dict) -> None:
+    """Push a ticket event to all connected admin SSE clients for org_id.
+
+    Uses put_nowait so a slow admin client never blocks the ticket creation path.
+    """
+    queues = _admin_sse_queues.get(org_id)
+    if not queues:
+        return
+    payload = f"data: {json.dumps(event_data)}\n\n"
+    for q in list(queues):  # snapshot — a disconnect finalizer may mutate the list concurrently
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            log.warning("admin.sse.queue_full", org_id=org_id)
 
 
 def _require_admin(user: UserModel) -> None:
@@ -536,3 +560,63 @@ def revoke_invite(
     db.delete(invite)
     db.commit()
     log.info("admin.invite_revoked", invite_id=invite_id, org_id=current_user.org_id)
+
+
+# ── Admin SSE stream ──────────────────────────────────────────────────────────
+
+
+async def _sse_event_stream(org_id: str, q: "asyncio.Queue[str]") -> AsyncGenerator[str, None]:
+    """Infinite SSE generator for one admin client. Extracted for testability."""
+    queues = _admin_sse_queues.setdefault(org_id, [])
+    queues.append(q)
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                yield event
+            except asyncio.TimeoutError:
+                yield "event: ping\ndata: {}\n\n"
+    finally:
+        queues.remove(q)
+        if not queues:
+            del _admin_sse_queues[org_id]
+
+
+@admin_router.get(
+    "/stream",
+    summary="SSE stream of resolved/escalated ticket events for this organisation (admin only)",
+)
+async def admin_stream(
+    token: str = Query(..., description="Bearer JWT — EventSource cannot set custom headers"),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    # NOTE: JWT passed as query param — EventSource does not support custom headers.
+    # Ensure server access logs filter sensitive query params in production.
+
+    payload = _decode_token(token)  # raises 401 if invalid or expired
+
+    jti: Optional[str] = payload.get("jti")
+    if jti and db.get(TokenBlocklistModel, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
+        )
+    user_id: Optional[str] = payload.get("sub")
+    user = db.get(UserModel, user_id) if user_id else None
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "User not found", "code": "USER_NOT_FOUND"},
+        )
+    _require_admin(user)  # raises 403 if role != "admin"
+    if not user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "NO_ORG"})
+    org_id: str = user.org_id
+
+    q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+
+    return StreamingResponse(
+        _sse_event_stream(org_id, q),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
