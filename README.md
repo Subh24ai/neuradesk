@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-111%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen)](tests/)
 
 ## Demo
 
@@ -107,7 +107,7 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 111 tests
+pytest tests/ -v          # 169 tests
 ```
 
 **Run the load test:**
@@ -193,12 +193,37 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 
 See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 
+## Known Limitations
+
+### Fixed in v1.1
+
+| Issue | Fix |
+|---|---|
+| ✅ No escalation notifications | Email + Slack alerts fire from `escalation_node` |
+| ✅ Destructive actions unconfirmable from UI | Confirm/cancel flow via `POST /tickets/{id}/confirm-action` |
+| ✅ FAISS not updated on KB upload | `add_documents()` called after every admin KB insert |
+| ✅ JWT not revocable | `TokenBlocklist` table — every authenticated request checked |
+| ✅ Images not persisted after upload | GCS upload utility; URL stored in `tickets.image_url` |
+| ✅ No admin real-time push | SSE stream at `GET /admin/stream` with per-org queue |
+| ✅ WebSocket no reconnect logic | Exponential backoff (1 s / 2 s / 4 s) + fetch on reconnect |
+| ✅ No Slack notifications on escalation | Slack incoming-webhook via `notifications/slack.py` |
+
+### Remaining
+
+- Mock enterprise APIs — `services/enterprise_api.py` stubs only; no real ITSM/HR integration
+- No prompt injection filter — free-text ticket input is passed directly to the LLM
+- Groq single point of failure — no fallback LLM configured
+- `audit.jsonl` unbounded — no rotation or max-size policy
+- RAG answer relevancy 0.44 — corpus too small; improves with more KB documents
+- `SUPPORT_EMAIL` / SMTP must be configured manually per org
+
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
 - ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
 - ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
+- ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green
 
 ---
 

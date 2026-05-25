@@ -55,5 +55,6 @@ Production target: P50 < 2s with dedicated inference.
 | Metric | Value |
 |---|---|
 | Tests passing | 111 |
+| Test suite (after hardening) | 169 tests, 0 failures |
 | Concurrent workers (load test) | 3 |
 | Tickets simulated | 100 |
