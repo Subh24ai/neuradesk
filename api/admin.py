@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from api.auth import get_current_user
+from rag.retriever import get_retriever
 from api.models import (
     CommentCreate,
     CommentListResponse,
@@ -270,6 +271,12 @@ def create_kb_doc(
     db.commit()
     db.refresh(doc)
     log.info("admin.kb_doc_created", doc_id=doc.id, org_id=current_user.org_id)
+
+    try:
+        get_retriever().add_documents([{"source": f"org-kb:{doc.id}", "content": doc.content}])
+    except Exception:
+        log.warning("admin.kb_doc.retriever_update_failed", doc_id=doc.id)
+
     return KnowledgeDocResponse.model_validate(doc)
 
 
@@ -378,6 +385,12 @@ async def upload_kb_doc(
     db.commit()
     db.refresh(doc)
     log.info("admin.kb_doc_uploaded", doc_id=doc.id, filename=filename, org_id=current_user.org_id)
+
+    try:
+        get_retriever().add_documents([{"source": f"org-kb:{doc.id}", "content": doc.content}])
+    except Exception:
+        log.warning("admin.kb_doc.retriever_update_failed", doc_id=doc.id)
+
     return KnowledgeDocResponse.model_validate(doc)
 
 

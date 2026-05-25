@@ -115,3 +115,55 @@ class TestRetriever:
         results = retriever.search("incident severity classification", top_k=3)
         for chunk in results:
             assert len(chunk["content"]) >= 60
+
+
+# ── add_documents + get() classmethod tests ───────────────────────────────────
+
+
+class TestAddDocuments:
+    """Tests for HybridRetriever.add_documents() and the get() classmethod."""
+
+    def test_get_classmethod_returns_retriever(self) -> None:
+        """HybridRetriever.get() returns the module-level singleton."""
+        from rag.retriever import HybridRetriever
+        r = HybridRetriever.get()
+        assert isinstance(r, HybridRetriever)
+        assert r is HybridRetriever.get()  # same object on repeated calls
+
+    def test_add_documents_increases_corpus(self) -> None:
+        """add_documents() grows _documents, _texts, and the FAISS index by the added count."""
+        docs = load_documents()
+        r = HybridRetriever(docs[:5])
+        initial_doc_count = len(r._documents)
+        initial_faiss_count = r._faiss_index.ntotal
+
+        r.add_documents([{"source": "test-extra.md", "content": "Unique content for testing add_documents incremental indexing."}])
+
+        assert len(r._documents) == initial_doc_count + 1
+        assert len(r._texts) == initial_doc_count + 1
+        assert r._faiss_index.ntotal == initial_faiss_count + 1
+
+    def test_add_documents_noop_on_empty_list(self) -> None:
+        """add_documents([]) leaves the corpus unchanged and does not raise."""
+        docs = load_documents()
+        r = HybridRetriever(docs[:3])
+        initial_count = len(r._documents)
+        r.add_documents([])
+        assert len(r._documents) == initial_count
+
+    def test_add_documents_new_content_searchable(self) -> None:
+        """A document added via add_documents() is returned by a subsequent search."""
+        docs = load_documents()
+        r = HybridRetriever(docs[:5])
+        unique_source = "injected-custom-kb.md"
+        r.add_documents([{
+            "source": unique_source,
+            "content": (
+                "Maternity leave policy grants twelve weeks of paid leave. "
+                "Employees must submit a maternity leave request form to HR "
+                "at least eight weeks before the expected due date."
+            ),
+        }])
+        results = r.search("maternity leave request HR form", top_k=3)
+        sources = [c["source"] for c in results]
+        assert unique_source in sources, f"Injected doc not found in top-3: {sources}"

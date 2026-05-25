@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from typing import Optional
 
 import numpy as np
@@ -46,6 +47,7 @@ class HybridRetriever:
 
         self._documents: list[Document] = documents
         self._texts: list[str] = [d["content"] for d in documents]
+        self._lock: threading.Lock = threading.Lock()
 
         log.info("retriever.build_start", num_docs=len(documents))
 
@@ -126,20 +128,63 @@ class HybridRetriever:
         )
         return results
 
+    def add_documents(self, documents: list[Document]) -> None:
+        """Incrementally add documents to the live FAISS and BM25 indices.
+
+        FAISS IndexFlatIP supports incremental add; BM25 is rebuilt from the
+        full corpus because IDF scores depend on global document frequency.
+        Thread-safe via an instance-level lock.
+
+        Args:
+            documents: New documents to index. Empty list is a no-op.
+        """
+        if not documents:
+            return
+        with self._lock:
+            new_texts = [d["content"] for d in documents]
+
+            # Embed and add to FAISS incrementally.
+            new_embeddings: np.ndarray = self._embedder.encode(
+                new_texts, show_progress_bar=False, convert_to_numpy=True
+            ).astype(np.float32)
+            faiss.normalize_L2(new_embeddings)
+            self._faiss_index.add(new_embeddings)
+
+            # Extend in-memory corpus lists.
+            self._documents.extend(documents)
+            self._texts.extend(new_texts)
+
+            # BM25 IDF depends on corpus size — rebuild from the full corpus.
+            self._bm25 = BM25Okapi([t.lower().split() for t in self._texts])
+
+        log.info(
+            "retriever.add_documents",
+            num_added=len(documents),
+            total=len(self._documents),
+        )
+
+    @classmethod
+    def get(cls) -> "HybridRetriever":
+        """Return the module-level singleton, initialising it on first call."""
+        return get_retriever()
+
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 
 _retriever: Optional[HybridRetriever] = None
+_init_lock: threading.Lock = threading.Lock()
 
 
 def get_retriever() -> HybridRetriever:
     """Return the module-level HybridRetriever singleton, building it on first call.
 
     The index is built once per process from rag/data/*.md documents.
-    Subsequent calls return the cached instance.
+    Subsequent calls return the cached instance. Thread-safe via double-checked locking.
     """
     global _retriever
     if _retriever is None:
-        docs = load_documents()
-        _retriever = HybridRetriever(docs)
+        with _init_lock:
+            if _retriever is None:
+                docs = load_documents()
+                _retriever = HybridRetriever(docs)
     return _retriever
