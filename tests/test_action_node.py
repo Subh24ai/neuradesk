@@ -132,17 +132,29 @@ class TestActionNode:
         assert result["escalated"] is True
 
     def test_destructive_action_blocked_without_confirmation(self) -> None:
-        """Destructive intent without confirmation escalates — no API call made."""
+        """Destructive intent without confirmation halts for user confirmation — no API call made."""
         state = _base_state(intent="access_revoke", action_confirmed=None)
 
         with patch("agents.action_node._post_enterprise") as mock_post:
             result = action_node(state)
 
         mock_post.assert_not_called()
-        assert result["status"] == "escalated"
+        assert result["status"] == "awaiting_confirmation"
         assert result["action_confirmed"] is False
         assert result["error"] is not None
-        assert "confirmation" in result["error"].lower()
+        assert "confirm" in result["error"].lower()
+
+    def test_awaiting_confirmation_status_returned_for_destructive(self) -> None:
+        """Destructive intent sets status='awaiting_confirmation' and populates escalation_reason."""
+        state = _base_state(intent="account_lock", action_confirmed=None)
+
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = action_node(state)
+
+        mock_post.assert_not_called()
+        assert result["status"] == "awaiting_confirmation"
+        assert result["escalation_reason"] is not None
+        assert "account_lock" in result["escalation_reason"]
 
     def test_api_error_sets_escalated(self) -> None:
         """A network error from the enterprise API sets status=escalated."""

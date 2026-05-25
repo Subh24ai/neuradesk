@@ -114,7 +114,7 @@ class TicketModel(Base):
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     raw_image_b64: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     intent: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

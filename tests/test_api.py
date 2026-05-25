@@ -512,6 +512,102 @@ class TestAdmin:
         assert body["offset"] == 0
 
 
+class TestConfirmCancel:
+    """POST /tickets/{id}/confirm-action and POST /tickets/{id}/cancel."""
+
+    def _create_awaiting_ticket(self, test_client, db_engine, email: str, org: str) -> tuple[str, str]:
+        """Register a user, create a ticket, force status to awaiting_confirmation. Returns (ticket_id, token)."""
+        from sqlalchemy.orm import sessionmaker
+        from api.models import TicketModel
+
+        token = _register_and_verify(test_client, email, "password123", org)
+        r = test_client.post(
+            "/tickets",
+            json={"text": "revoke my access immediately"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 201
+        ticket_id = r.json()["ticket_id"]
+
+        S = sessionmaker(bind=db_engine)
+        db = S()
+        t = db.get(TicketModel, ticket_id)
+        t.status = "awaiting_confirmation"
+        db.commit()
+        db.close()
+        return ticket_id, token
+
+    def test_confirm_action_resolves_destructive_ticket(self, test_client, db_engine) -> None:
+        """POST /tickets/{id}/confirm-action re-runs graph with confirmed=True and returns resolved status."""
+        ticket_id, token = self._create_awaiting_ticket(
+            test_client, db_engine, "confirm@action.ai", "Confirm Org"
+        )
+        resolved_state = {
+            "status": "resolved",
+            "resolution": "Access revoked successfully.",
+            "category": "access_request",
+            "intent": "access_revoke",
+            "confidence": 0.95,
+            "priority": "HIGH",
+            "escalation_reason": None,
+            "assignee_group": None,
+        }
+        with patch("api.main.langgraph_graph") as mock_graph:
+            mock_graph.invoke.return_value = resolved_state
+            r = test_client.post(
+                f"/tickets/{ticket_id}/confirm-action",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "resolved"
+
+    def test_cancel_action_escalates(self, test_client, db_engine) -> None:
+        """POST /tickets/{id}/cancel sets status to escalated with a cancellation reason."""
+        ticket_id, token = self._create_awaiting_ticket(
+            test_client, db_engine, "cancel@action.ai", "Cancel Org"
+        )
+        r = test_client.post(
+            f"/tickets/{ticket_id}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "escalated"
+        assert body["escalation_reason"] is not None
+        assert "cancelled" in body["escalation_reason"].lower()
+
+    def test_confirm_action_rejects_wrong_user(self, test_client, db_engine) -> None:
+        """User B cannot confirm User A's ticket — returns 404."""
+        ticket_id, _token_a = self._create_awaiting_ticket(
+            test_client, db_engine, "owner.conf@action.ai", "Owner Org Conf"
+        )
+        token_b = _register_and_verify(test_client, "attacker.conf@action.ai", "password123", "Attacker Org Conf")
+        r = test_client.post(
+            f"/tickets/{ticket_id}/confirm-action",
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "TICKET_NOT_FOUND"
+
+    def test_confirm_returns_409_if_not_awaiting(self, test_client, db_engine) -> None:
+        """Confirming a ticket that is already resolved returns 409 INVALID_TICKET_STATUS."""
+        token = _register_and_verify(test_client, "conf409@action.ai", "password123", "409 Org")
+        r = test_client.post(
+            "/tickets",
+            json={"text": "I forgot my password"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        ticket_id = r.json()["ticket_id"]
+
+        r = test_client.post(
+            f"/tickets/{ticket_id}/confirm-action",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "INVALID_TICKET_STATUS"
+
+
 class TestHealth:
     """GET /health liveness probe."""
 

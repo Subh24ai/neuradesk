@@ -161,8 +161,9 @@ def action_node(state: TicketState) -> TicketState:
         return {
             **state,
             "action_confirmed": False,
-            "status": "escalated",
-            "error": f"Destructive intent '{intent}' requires explicit confirmation.",
+            "status": "awaiting_confirmation",
+            "escalation_reason": f"Explicit confirmation required to execute '{intent}' on your account.",
+            "error": f"Confirm required for '{intent}'",
         }  # type: ignore[return-value]
 
     # 3. Build username substitution context for the resolution template.

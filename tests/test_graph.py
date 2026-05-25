@@ -70,19 +70,24 @@ class TestRouting:
         state = _base_state(confidence=0.6, status="resolved")
         assert _should_escalate(state) == "__end__"
 
+    def test_awaiting_confirmation_routes_to_end(self) -> None:
+        """status='awaiting_confirmation' exits the graph without calling escalation_node."""
+        state = _base_state(status="awaiting_confirmation", confidence=0.9)
+        assert _should_escalate(state) == "__end__"
+
 
 class TestActionNode:
     """Tests for action_node destructive-action guard and resolution rendering."""
 
     def test_destructive_action_requires_confirmation(self) -> None:
-        """Destructive intent without confirmation → status=escalated."""
+        """Destructive intent without confirmation → status=awaiting_confirmation."""
         state = _base_state(intent="access_revoke", action_confirmed=None)
         result = action_node(state)
 
-        assert result["status"] == "escalated"
+        assert result["status"] == "awaiting_confirmation"
         assert result["action_confirmed"] is False
         assert result["error"] is not None
-        assert "confirmation" in result["error"].lower()
+        assert "confirm" in result["error"].lower()
 
     def test_destructive_action_with_explicit_confirmation_proceeds(self) -> None:
         """Destructive intent WITH action_confirmed=True bypasses the guard."""
@@ -125,7 +130,7 @@ class TestFullGraph:
     def test_full_graph_smoke(self) -> None:
         """run_ticket returns a valid final status."""
         result = run_ticket("I forgot my password", "test-user-001", "text")
-        assert result["status"] in ("resolved", "escalated")
+        assert result["status"] in ("resolved", "escalated", "awaiting_confirmation")
 
     def test_full_graph_populates_all_key_fields(self) -> None:
         """All expected output fields are non-None after the graph runs."""

@@ -65,6 +65,6 @@ class TicketState(TypedDict):
     slack_webhook_url: Optional[str]    # org Slack webhook URL for escalation alerts
 
     # ── Graph control ─────────────────────────────────────────────────────
-    status: Literal["triaging", "retrieving", "acting", "resolved", "escalated"]
+    status: Literal["triaging", "retrieving", "acting", "resolved", "escalated", "awaiting_confirmation"]
     error: Optional[str]
     trace_url: Optional[str]

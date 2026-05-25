@@ -136,6 +136,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
   const [elapsedSec, setElapsedSec] = useState<number | null>(null)
   const [liveElapsed, setLiveElapsed] = useState(0)
   const wsRef = useRef<WebSocket | null>(null)
+  const [confirmStatus, setConfirmStatus] = useState<'idle' | 'pending' | 'confirmed' | 'cancelled'>('idle')
 
   const connect = useCallback(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -199,10 +200,50 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
     return () => clearInterval(timer)
   }, [isComplete])
 
+  const handleConfirm = async () => {
+    setConfirmStatus('pending')
+    try {
+      const res = await fetch(`/tickets/${ticketId}/confirm-action`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setFinalSnapshot((prev) => ({ ...prev, status: data.status, resolution: data.resolution }))
+        setConfirmStatus('confirmed')
+      } else {
+        setConfirmStatus('idle')
+      }
+    } catch {
+      setConfirmStatus('idle')
+    }
+  }
+
+  const handleCancel = async () => {
+    setConfirmStatus('pending')
+    try {
+      const res = await fetch(`/tickets/${ticketId}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        setFinalSnapshot((prev) => ({ ...prev, status: 'escalated', escalation_reason: 'Destructive action cancelled by user.' }))
+        setConfirmStatus('cancelled')
+      } else {
+        setConfirmStatus('idle')
+      }
+    } catch {
+      setConfirmStatus('idle')
+    }
+  }
+
   const allSteps = [...steps, ...(escalationStep ? [escalationStep] : [])]
   const doneCount = allSteps.filter((s) => s.isDone).length
   const inProgressIdx = isComplete ? -1 : doneCount
-  const isEscalated = finalSnapshot.status === 'escalated' || Boolean(finalSnapshot.escalation_reason)
+  const isAwaiting = finalSnapshot.status === 'awaiting_confirmation' && confirmStatus === 'idle'
+  const isEscalated = finalSnapshot.status === 'escalated'
+    || (finalSnapshot.status === 'awaiting_confirmation' && confirmStatus === 'cancelled')
+    || (!isAwaiting && Boolean(finalSnapshot.escalation_reason) && finalSnapshot.status !== 'resolved')
   const showHint = !escalationStep && !isComplete
   const displaySteps = [
     ...allSteps.map((s, i) => ({ ...s, isHint: false, displayIdx: i })),
@@ -216,7 +257,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         {/* Gradient header */}
         <div className={`px-6 py-5 transition-all duration-700 ${
-          isComplete && isEscalated
+          isComplete && (isAwaiting || isEscalated)
             ? 'bg-gradient-to-r from-amber-500 to-orange-500'
             : isComplete
             ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
@@ -225,7 +266,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
               <p className="text-white/70 text-[11px] font-semibold uppercase tracking-widest mb-1.5">
-                {isComplete ? (isEscalated ? 'Escalated' : 'Resolved') : 'Processing'}
+                {isComplete ? (isAwaiting ? 'Confirmation Required' : isEscalated ? 'Escalated' : 'Resolved') : 'Processing'}
               </p>
               <p className="text-white font-semibold text-sm leading-snug line-clamp-2">{text}</p>
             </div>
@@ -304,7 +345,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
         {/* Progress bar */}
         <div className="h-1 bg-slate-100" role="progressbar" aria-valuenow={progressPct} aria-valuemin={0} aria-valuemax={100}>
           <div
-            className={`h-full transition-all duration-700 ease-out ${isEscalated && isComplete ? 'bg-amber-400' : isComplete ? 'bg-emerald-400' : 'bg-indigo-500'}`}
+            className={`h-full transition-all duration-700 ease-out ${(isEscalated || isAwaiting) && isComplete ? 'bg-amber-400' : isComplete ? 'bg-emerald-400' : 'bg-indigo-500'}`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -313,15 +354,15 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
       {/* ── Result card ── */}
       {isComplete && !wsError && (
         <div
-          className={`bg-white rounded-2xl shadow-sm overflow-hidden border fade-in ${isEscalated ? 'border-amber-200' : 'border-emerald-200'}`}
+          className={`bg-white rounded-2xl shadow-sm overflow-hidden border fade-in ${isAwaiting || isEscalated ? 'border-amber-200' : 'border-emerald-200'}`}
           role="status"
           aria-live="polite"
         >
           {/* Coloured top band */}
-          <div className={`px-6 py-4 border-b ${isEscalated ? 'bg-amber-50 border-amber-100' : 'bg-emerald-50 border-emerald-100'}`}>
+          <div className={`px-6 py-4 border-b ${isAwaiting || isEscalated ? 'bg-amber-50 border-amber-100' : 'bg-emerald-50 border-emerald-100'}`}>
             <div className="flex items-center gap-3">
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${isEscalated ? 'bg-amber-100' : 'bg-emerald-100'}`}>
-                {isEscalated ? (
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${isAwaiting || isEscalated ? 'bg-amber-100' : 'bg-emerald-100'}`}>
+                {isAwaiting || isEscalated ? (
                   <svg className="w-4 h-4 text-amber-600" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                     <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
                   </svg>
@@ -332,11 +373,11 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
                 )}
               </div>
               <div>
-                <h3 className={`font-semibold text-sm ${isEscalated ? 'text-amber-900' : 'text-emerald-900'}`}>
-                  {isEscalated ? 'Escalated to Human Queue' : 'Resolved automatically'}
+                <h3 className={`font-semibold text-sm ${isAwaiting || isEscalated ? 'text-amber-900' : 'text-emerald-900'}`}>
+                  {isAwaiting ? 'Confirmation Required' : isEscalated ? 'Escalated to Human Queue' : 'Resolved automatically'}
                 </h3>
-                <p className={`text-xs mt-0.5 ${isEscalated ? 'text-amber-600' : 'text-emerald-600'}`}>
-                  {isEscalated ? 'A support agent will follow up shortly' : `Completed${elapsedSec != null ? ` in ${elapsedSec}s` : ''}`}
+                <p className={`text-xs mt-0.5 ${isAwaiting || isEscalated ? 'text-amber-600' : 'text-emerald-600'}`}>
+                  {isAwaiting ? 'Please confirm before the action is executed' : isEscalated ? 'A support agent will follow up shortly' : `Completed${elapsedSec != null ? ` in ${elapsedSec}s` : ''}`}
                 </p>
               </div>
             </div>
@@ -344,19 +385,36 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
 
           {/* Body */}
           <div className="px-6 py-4 space-y-3">
-            {isEscalated ? (
+            {isAwaiting ? (
               <>
-                {finalSnapshot.escalation_reason && (() => {
-                  const isDestructive = finalSnapshot.escalation_reason?.toLowerCase().includes('confirmation')
-                  return isDestructive ? (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 space-y-1.5">
-                      <p className="text-sm font-semibold text-amber-800">Manual approval required</p>
-                      <p className="text-sm text-amber-700">This action (e.g. access revoke, account lock) requires explicit admin confirmation before it can be executed. Your admin has been notified and will action it shortly.</p>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-600 leading-relaxed">{finalSnapshot.escalation_reason}</p>
-                  )
-                })()}
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 space-y-1.5">
+                  <p className="text-sm font-semibold text-amber-800">This action requires your confirmation</p>
+                  <p className="text-sm text-amber-700">
+                    {finalSnapshot.escalation_reason ?? 'A destructive operation was requested. Please confirm to proceed or cancel to escalate to a support agent.'}
+                  </p>
+                </div>
+                <div className="flex gap-3 pt-1">
+                  <button
+                    onClick={handleConfirm}
+                    disabled={confirmStatus === 'pending'}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors"
+                  >
+                    {confirmStatus === 'pending' ? 'Processing…' : 'Confirm action'}
+                  </button>
+                  <button
+                    onClick={handleCancel}
+                    disabled={confirmStatus === 'pending'}
+                    className="flex-1 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-sm font-semibold py-2 px-4 rounded-lg border border-slate-200 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : isEscalated ? (
+              <>
+                {finalSnapshot.escalation_reason && (
+                  <p className="text-sm text-slate-600 leading-relaxed">{finalSnapshot.escalation_reason}</p>
+                )}
                 {finalSnapshot.assignee_group && (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400">Assigned to</span>

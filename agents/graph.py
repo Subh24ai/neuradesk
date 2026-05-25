@@ -27,6 +27,8 @@ log = structlog.get_logger(__name__)
 
 def _should_escalate(state: TicketState) -> Literal["escalation_node", "__end__"]:
     """Routing function executed after action_node."""
+    if state.get("status") == "awaiting_confirmation":
+        return "__end__"  # halt graph; user must confirm via POST /tickets/{id}/confirm-action
     if state.get("status") == "escalated":
         return "escalation_node"
     if (state.get("confidence") or 1.0) < 0.6:

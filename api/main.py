@@ -256,6 +256,121 @@ def get_ticket(
         )
 
 
+@app.post(
+    "/tickets/{ticket_id}/confirm-action",
+    response_model=TicketResponse,
+    tags=["tickets"],
+    summary="Confirm a destructive action awaiting explicit authorization",
+)
+def confirm_action(
+    ticket_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketResponse:
+    """Re-run the agent graph with action_confirmed=True for a ticket in awaiting_confirmation status.
+
+    Returns 404 if the ticket does not exist or is not owned by the caller.
+    Returns 409 if the ticket is not in 'awaiting_confirmation' status.
+    """
+    ticket = db.get(TicketModel, ticket_id)
+    if ticket is None or ticket.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Ticket not found", "code": "TICKET_NOT_FOUND"},
+        )
+    if ticket.status != "awaiting_confirmation":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "Ticket is not awaiting confirmation", "code": "INVALID_TICKET_STATUS"},
+        )
+
+    # Load org context (mirrors WS handler logic).
+    org_kb_docs: list[dict] = []
+    org_api_url: Optional[str] = None
+    org_api_secret: Optional[str] = None
+    org_name: str = ""
+    support_email: str = os.getenv("SUPPORT_EMAIL", "")
+    if ticket.org_id:
+        kb_rows = (
+            db.query(OrgKnowledgeDocModel)
+            .filter(OrgKnowledgeDocModel.org_id == ticket.org_id)
+            .all()
+        )
+        org_kb_docs = [{"title": r.title, "content": r.content} for r in kb_rows]
+        org_cfg = db.get(OrgConfigModel, ticket.org_id)
+        if org_cfg:
+            org_api_url = org_cfg.itsm_url or None
+        org_obj = db.get(OrganizationModel, ticket.org_id)
+        org_name = org_obj.name if org_obj else ""
+
+    initial_state = build_initial_state(
+        ticket.raw_text, current_user.email, ticket.channel or "text",
+        org_id=ticket.org_id,
+        org_name=org_name,
+        org_kb_docs=org_kb_docs,
+        org_api_url=org_api_url,
+        org_api_secret=org_api_secret,
+        raw_image_b64=ticket.raw_image_b64,
+        support_email=support_email,
+        user_email=current_user.email,
+        slack_webhook_url=None,
+    )
+    initial_state["action_confirmed"] = True  # type: ignore[index]
+
+    final_state: dict = langgraph_graph.invoke(initial_state)
+
+    ticket.status = final_state.get("status", "resolved")
+    ticket.category = final_state.get("category")
+    ticket.intent = final_state.get("intent")
+    ticket.confidence = final_state.get("confidence")
+    ticket.resolution = final_state.get("resolution")
+    ticket.escalation_reason = final_state.get("escalation_reason")
+    ticket.assignee_group = final_state.get("assignee_group")
+    ticket.priority = final_state.get("priority")
+    db.commit()
+    db.refresh(ticket)
+
+    log.info("tickets.confirm_action.done", ticket_id=ticket_id, status=ticket.status)
+    return _orm_to_response(ticket)
+
+
+@app.post(
+    "/tickets/{ticket_id}/cancel",
+    response_model=TicketResponse,
+    tags=["tickets"],
+    summary="Cancel a destructive action awaiting confirmation",
+)
+def cancel_action(
+    ticket_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketResponse:
+    """Set an awaiting_confirmation ticket to escalated.
+
+    Returns 404 if the ticket does not exist or is not owned by the caller.
+    Returns 409 if the ticket is not in 'awaiting_confirmation' status.
+    """
+    ticket = db.get(TicketModel, ticket_id)
+    if ticket is None or ticket.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Ticket not found", "code": "TICKET_NOT_FOUND"},
+        )
+    if ticket.status != "awaiting_confirmation":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "Ticket is not awaiting confirmation", "code": "INVALID_TICKET_STATUS"},
+        )
+
+    ticket.status = "escalated"
+    ticket.escalation_reason = "Destructive action cancelled by user."
+    db.commit()
+    db.refresh(ticket)
+
+    log.info("tickets.cancel_action.done", ticket_id=ticket_id)
+    return _orm_to_response(ticket)
+
+
 @app.get(
     "/tickets/{ticket_id}/comments",
     response_model=CommentListResponse,
