@@ -124,6 +124,7 @@ class TicketModel(Base):
     assignee_group: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     priority: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     resolved_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     trace_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -184,6 +185,19 @@ class InviteModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class TokenBlocklistModel(Base):
+    """Revoked JWT IDs — checked on every authenticated request to enforce logout."""
+
+    __tablename__ = "token_blocklist"
+
+    jti: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TicketCommentModel(Base):
@@ -356,6 +370,7 @@ class TicketResponse(BaseModel):
     assignee_group: Optional[str] = None
     priority: Optional[str] = None
     user_email: Optional[str] = None
+    image_url: Optional[str] = None
     trace_url: Optional[str] = None
     created_at: datetime
 

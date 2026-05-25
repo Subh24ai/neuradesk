@@ -3,6 +3,7 @@
 import os
 import re
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -30,6 +31,7 @@ from api.models import (
     OtpVerifyRequest,
     RegisterRequest,
     ResetPasswordRequest,
+    TokenBlocklistModel,
     TokenResponse,
     UserModel,
     get_db,
@@ -96,6 +98,7 @@ def create_access_token(
     expire = datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": user_id,
+        "jti": str(uuid.uuid4()),  # unique token ID — stored in blocklist on logout
         "email": email,
         "org_id": org_id,
         "org_name": org_name,
@@ -157,8 +160,16 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
     db: Session = Depends(get_db),
 ) -> UserModel:
-    """Resolve Bearer JWT to a UserModel; raise 401 if missing, invalid, or expired."""
+    """Resolve Bearer JWT to a UserModel; raise 401 if missing, invalid, expired, or revoked."""
     payload = _decode_token(credentials.credentials)
+
+    jti: Optional[str] = payload.get("jti")
+    if jti and db.get(TokenBlocklistModel, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
+        )
+
     user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -580,6 +591,15 @@ def change_password(
             detail={"error": "Current password is incorrect", "code": "WRONG_PASSWORD"},
         )
     user.hashed_password = hash_password(req.new_password)
+    old_jti: Optional[str] = payload.get("jti")
+    if old_jti:
+        exp = payload.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp, tz=timezone.utc)
+            if exp
+            else datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
+        )
+        db.add(TokenBlocklistModel(jti=old_jti, expires_at=expires_at))
     db.commit()
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
     log.info("auth.change_password", user_id=user.id)
@@ -587,6 +607,27 @@ def change_password(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
     ))
+
+
+@auth_router.post("/logout", summary="Invalidate the current Bearer token")
+def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Add the token's jti to the blocklist. Idempotent — safe to call multiple times."""
+    payload = _decode_token(credentials.credentials)
+    jti: Optional[str] = payload.get("jti")
+    if jti and not db.get(TokenBlocklistModel, jti):
+        exp = payload.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp, tz=timezone.utc)
+            if exp
+            else datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
+        )
+        db.add(TokenBlocklistModel(jti=jti, expires_at=expires_at))
+        db.commit()
+    log.info("auth.logout", jti=jti)
+    return {"message": "Logged out successfully"}
 
 
 @auth_router.post("/login", response_model=TokenResponse, summary="Login with email + password")

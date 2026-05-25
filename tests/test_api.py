@@ -512,6 +512,55 @@ class TestAdmin:
         assert body["offset"] == 0
 
 
+class TestJWTRevocation:
+    """POST /auth/logout — token blocklist and revocation on logout + password change."""
+
+    def test_logout_returns_200(self, auth_client) -> None:
+        """POST /auth/logout with a valid token returns 200 with a message."""
+        r = auth_client.post("/auth/logout")
+        assert r.status_code == 200
+        assert r.json()["message"] == "Logged out successfully"
+
+    def test_revoked_token_rejected_with_401(self, auth_client) -> None:
+        """After logout, the same token is rejected on any authenticated endpoint."""
+        auth_client.post("/auth/logout")
+        r = auth_client.get("/tickets/")
+        assert r.status_code == 401
+        assert r.json()["detail"]["code"] == "TOKEN_REVOKED"
+
+    def test_change_password_revokes_old_token(self, auth_client) -> None:
+        """After change-password, the old Bearer token is rejected with TOKEN_REVOKED."""
+        old_auth_header = auth_client.headers["Authorization"]
+        auth_client.post(
+            "/auth/change-password",
+            json={"current_password": "testpassword99", "new_password": "newpassword99"},
+        )
+        r = auth_client.get("/tickets/", headers={"Authorization": old_auth_header})
+        assert r.status_code == 401
+        assert r.json()["detail"]["code"] == "TOKEN_REVOKED"
+
+    def test_logout_is_idempotent(self, auth_client) -> None:
+        """Calling logout twice does not raise a 500 — second call is a no-op."""
+        r1 = auth_client.post("/auth/logout")
+        assert r1.status_code == 200
+        # Second call uses already-revoked token — logout bypasses get_current_user's
+        # blocklist check and is idempotent (jti already present, no duplicate insert).
+        r2 = auth_client.post("/auth/logout")
+        assert r2.status_code == 200
+
+    def test_fresh_token_after_logout_works(self, test_client) -> None:
+        """A new login after logout returns a fresh valid token."""
+        token = _register_and_verify(test_client, "fresh@logout.ai", "password123", "Logout Org")
+        test_client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+        # Re-login and get a new token
+        r = test_client.post("/auth/login", json={"email": "fresh@logout.ai", "password": "password123"})
+        assert r.status_code == 200
+        new_token = r.json()["access_token"]
+        # New token should work
+        r2 = test_client.get("/tickets/", headers={"Authorization": f"Bearer {new_token}"})
+        assert r2.status_code == 200
+
+
 class TestAdminKB:
     """POST /admin/kb — knowledge base doc creation with live retriever update."""
 
@@ -637,6 +686,66 @@ class TestConfirmCancel:
         )
         assert r.status_code == 409
         assert r.json()["detail"]["code"] == "INVALID_TICKET_STATUS"
+
+
+class TestImagePersistence:
+    """POST /tickets image upload via GCS."""
+
+    def test_image_url_stored_when_upload_succeeds(self, test_client) -> None:
+        """When upload_image_b64 returns a URL, it is persisted and returned in the response."""
+        token = _register_and_verify(test_client, "imgtest1@acme.ai", "password123", "ImgOrg1")
+        fake_url = "https://storage.googleapis.com/neuradesk-bucket/tickets/abc/screenshot.png"
+        with patch("api.main.upload_image_b64", return_value=fake_url):
+            r = test_client.post(
+                "/tickets",
+                json={"text": "My screen is broken", "image_b64": "aGVsbG8="},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 201
+        assert r.json()["image_url"] == fake_url
+
+    def test_image_url_none_when_no_image(self, test_client) -> None:
+        """Tickets without image_b64 have image_url=None in the response."""
+        token = _register_and_verify(test_client, "imgtest2@acme.ai", "password123", "ImgOrg2")
+        r = test_client.post(
+            "/tickets",
+            json={"text": "No screenshot attached"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 201
+        assert r.json()["image_url"] is None
+
+    def test_ticket_created_even_if_upload_fails(self, test_client) -> None:
+        """A GCS upload failure does not prevent ticket creation (image_url remains None)."""
+        token = _register_and_verify(test_client, "imgtest3@acme.ai", "password123", "ImgOrg3")
+        with patch("api.main.upload_image_b64", return_value=None):
+            r = test_client.post(
+                "/tickets",
+                json={"text": "Screenshot attached but GCS is down", "image_b64": "aGVsbG8="},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 201
+        assert r.json()["image_url"] is None
+
+    def test_image_url_persisted_and_returned_by_get(self, test_client) -> None:
+        """image_url stored on create is returned unchanged by GET /tickets/{id}."""
+        token = _register_and_verify(test_client, "imgtest4@acme.ai", "password123", "ImgOrg4")
+        fake_url = "https://storage.googleapis.com/neuradesk-bucket/tickets/xyz/screenshot.png"
+        with patch("api.main.upload_image_b64", return_value=fake_url):
+            create_r = test_client.post(
+                "/tickets",
+                json={"text": "Persisted screenshot", "image_b64": "aGVsbG8="},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert create_r.status_code == 201
+        ticket_id = create_r.json()["ticket_id"]
+
+        get_r = test_client.get(
+            f"/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert get_r.status_code == 200
+        assert get_r.json()["image_url"] == fake_url
 
 
 class TestHealth:

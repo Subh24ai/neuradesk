@@ -17,6 +17,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from agents.graph import build_initial_state, graph as langgraph_graph
+from storage.gcs import upload_image_b64
 from tracing.langsmith import get_trace_url
 from api.a2a import router as a2a_router
 from api.admin import admin_router
@@ -145,6 +146,7 @@ def _orm_to_response(ticket: TicketModel) -> TicketResponse:
         confidence=ticket.confidence,
         resolution=ticket.resolution,
         escalation_reason=ticket.escalation_reason,
+        image_url=ticket.image_url,
         trace_url=ticket.trace_url,
         created_at=ticket.created_at,
     )
@@ -199,12 +201,17 @@ def create_ticket(
     """Persist a pending ticket and return immediately. The agent graph runs over WebSocket."""
     ticket_id = str(uuid.uuid4())
     try:
+        image_url: Optional[str] = None
+        if req.image_b64:
+            image_url = upload_image_b64(ticket_id, req.image_b64)
+
         ticket = TicketModel(
             id=ticket_id,
             user_id=current_user.id,
             org_id=current_user.org_id,
             raw_text=req.text,
             raw_image_b64=req.image_b64,
+            image_url=image_url,
             channel="image" if req.image_b64 else "text",
             status="pending",
         )
