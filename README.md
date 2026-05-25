@@ -8,7 +8,7 @@
 
 ## Demo
 
-> Demo video coming — Week 4
+> Demo video coming soon — submit a ticket at [localhost:3000](http://localhost:3000) to see the agent timeline live
 
 ---
 
@@ -44,7 +44,7 @@ graph TD
 | Orchestration | LangGraph 0.2, typed `TicketState` |
 | RAG | FAISS + rank-bm25 + sentence-transformers cross-encoder |
 | Prompt optimization | DSPy 2.5 |
-| LLM | Claude 3.5 Sonnet via langchain-anthropic |
+| LLM | Groq (llama-3.3-70b-versatile) — swappable via `LLM_PROVIDER` env var (Anthropic/OpenAI supported) |
 | Tracing | LangSmith — every node is a named span |
 | API | FastAPI 0.115, WebSocket streaming, structlog |
 | Auth | JWT (PyJWT) + bcrypt, 8-hour sessions |
@@ -88,9 +88,15 @@ docker-compose up --build
 
 **Local dev without Docker (SQLite fallback):**
 ```bash
-uvicorn api.main:app --reload --port 8001      #NeuraDesk Backend    # DATABASE_URL defaults to sqlite:///./neuradesk.db
-uvicorn services.enterprise_api:app --port 8002 --reload #Mock HR/IT?IAM APIs
-cd frontend && npm install && npm run dev   # React UI → localhost:3000
+# Terminal 1 — Enterprise mock API (port 8001):
+ENTERPRISE_API_SECRET=local-dev-secret-123 \
+  uvicorn services.enterprise_api:app --port 8001
+
+# Terminal 2 — Main backend (port 8000):
+uvicorn api.main:app --reload --port 8000
+
+# Terminal 3 — Frontend (port 3000):
+cd frontend && npm install && npm run dev
 ```
 
 **Submit your first ticket:**
@@ -126,7 +132,7 @@ python3 tests/load_test.py
 ***Option 2 — Local dev (two terminals):***
 ```
   Terminal 1 — Backend:
-  uvicorn api.main:app --reload --port 8001
+  uvicorn api.main:app --reload --port 8000
 
   Terminal 2 — Frontend:
   cd frontend && npm install && npm run dev
