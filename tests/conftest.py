@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("ENTERPRISE_API_SECRET", "test-enterprise-secret")
 os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-32chars!!")
-os.environ.setdefault("ENTERPRISE_API_URL", "http://localhost:8001")
+os.environ.setdefault("ENTERPRISE_API_BASE_URL", "http://localhost:8001")
 # Force empty so org creation is unrestricted in tests; monkeypatch overrides as needed.
 os.environ["ORG_CREATION_SECRET"] = ""
 

@@ -10,6 +10,8 @@ import structlog
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -45,6 +47,14 @@ from api.models import (
 
 load_dotenv()
 log = structlog.get_logger(__name__)
+
+# Absolute path to the pre-built React SPA.  Present in production Docker image;
+# absent in local dev (frontend runs on its own dev server with the Vite proxy).
+_FRONTEND_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend",
+    "dist",
+)
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 # Disabled in test/development so the test suite doesn't trip its own limits
@@ -91,6 +101,13 @@ app.add_middleware(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Serve pre-built React SPA assets when the dist folder is present.
+# The /assets mount must be registered before API routes so Starlette's
+# sub-application lookup does not fall through to the SPA catch-all below.
+_assets_dir = os.path.join(_FRONTEND_DIST, "assets")
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="spa_assets")
 
 app.include_router(auth_router)
 app.include_router(org_router)
@@ -605,3 +622,16 @@ async def websocket_ticket(
             await websocket.close()
         except Exception:
             pass
+
+
+# ── SPA catch-all — must be registered LAST ───────────────────────────────────
+# Serves index.html for every path not handled by the API routes above.
+# React Router then handles client-side navigation.
+
+@app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+async def serve_spa(full_path: str) -> FileResponse:
+    """Return the React SPA shell for any unknown path."""
+    index = os.path.join(_FRONTEND_DIST, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+    raise HTTPException(status_code=404, detail="Frontend not built — run: cd frontend && npm run build")

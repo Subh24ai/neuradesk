@@ -5,6 +5,7 @@ interface Props {
   isSubmitting?: boolean
   initialText?: string
   greeting?: string
+  agentsOnline?: boolean
 }
 
 const SUGGESTIONS = [
@@ -39,7 +40,7 @@ const SHORTCUT = isMac ? '⌘↵' : 'Ctrl↵'
 
 const MAX_IMAGE_BYTES = 1_048_576
 
-export default function TicketForm({ onSubmit, isSubmitting = false, initialText = '', greeting }: Props) {
+export default function TicketForm({ onSubmit, isSubmitting = false, initialText = '', greeting, agentsOnline = true }: Props) {
   const [text, setText] = useState(initialText)
   const [imageB64, setImageB64] = useState<string | null>(null)
   const [imageName, setImageName] = useState<string | null>(null)
@@ -118,12 +119,19 @@ export default function TicketForm({ onSubmit, isSubmitting = false, initialText
       {/* Hero section */}
       <div className="mb-8">
         <div className="flex flex-wrap items-center gap-2 mb-4">
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
-            4 AI agents online
-          </span>
+          {agentsOnline ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
+              4 AI agents online
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 rounded-full px-2.5 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true" />
+              backend offline
+            </span>
+          )}
           <span className="text-slate-300 text-xs hidden sm:inline">·</span>
-          <span className="text-xs text-slate-400 font-medium hidden sm:inline">avg. &lt;2s resolution</span>
+          <span className="text-xs text-slate-400 font-medium hidden sm:inline">avg. ~4s resolution</span>
         </div>
         <h2 className="text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight">
           {greeting ?? 'Submit a Request'}

@@ -216,10 +216,12 @@ function getStrength(pw: string): 0 | 1 | 2 | 3 | 4 {
 
 // ── Account panel ─────────────────────────────────────────────────────────────
 
-const MOCK_SESSIONS = [
-  { id: 'cur', device: 'MacBook Pro', os: 'macOS', browser: 'Chrome 124', location: 'Mumbai, IN', lastActive: 'Active now', current: true },
-  { id: 'mob', device: 'iPhone 15',   os: 'iOS',   browser: 'Safari 17',  location: 'Mumbai, IN', lastActive: '3 hours ago',  current: false },
-]
+interface ActiveSession {
+  jti: string
+  created_at: string
+  expires_at: string
+  is_current: boolean
+}
 
 function AccountPanel({
   token, email, firstName, lastName, orgName, role, onToast, onPasswordChanged, onLogout,
@@ -242,7 +244,26 @@ function AccountPanel({
   const [showConfirmPw, setShowConfirmPw] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [revokedSessions, setRevokedSessions] = useState<string[]>([])
+  const [sessions, setSessions] = useState<ActiveSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(true)
+  const [revokingJti, setRevokingJti] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSessions() {
+      try {
+        const r = await fetch('/auth/sessions', { headers: { Authorization: `Bearer ${token}` } })
+        if (r.ok && !cancelled) {
+          const data = await r.json() as { sessions: ActiveSession[] }
+          setSessions(data.sessions)
+        }
+      } catch { /* non-critical */ } finally {
+        if (!cancelled) setSessionsLoading(false)
+      }
+    }
+    loadSessions()
+    return () => { cancelled = true }
+  }, [token])
 
   const initials = firstName
     ? firstName.charAt(0).toUpperCase() + (lastName ? lastName.charAt(0).toUpperCase() : '')
@@ -290,7 +311,25 @@ function AccountPanel({
     }
   }
 
-  const activeSessions = MOCK_SESSIONS.filter(s => !revokedSessions.includes(s.id))
+  async function handleRevoke(jti: string) {
+    setRevokingJti(jti)
+    try {
+      const r = await fetch(`/auth/sessions/${jti}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (r.ok || r.status === 204) {
+        setSessions(prev => prev.filter(s => s.jti !== jti))
+        onToast('Session revoked', 'success')
+      } else {
+        onToast('Failed to revoke session', 'error')
+      }
+    } catch {
+      onToast('Network error', 'error')
+    } finally {
+      setRevokingJti(null)
+    }
+  }
 
   return (
     <div className="fade-in space-y-5 max-w-lg">
@@ -414,46 +453,49 @@ function AccountPanel({
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h3 className="text-sm font-bold text-slate-900 font-display">Active sessions</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Devices currently signed in to your account.</p>
+            <p className="text-xs text-slate-400 mt-0.5">All signed-in sessions for your account.</p>
           </div>
-          <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded-full px-2.5 py-1">{activeSessions.length}</span>
+          <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded-full px-2.5 py-1">
+            {sessionsLoading ? '…' : sessions.length}
+          </span>
         </div>
-        {activeSessions.length === 0 ? (
+        {sessionsLoading ? (
+          <p className="px-5 py-5 text-sm text-slate-400 text-center">Loading…</p>
+        ) : sessions.length === 0 ? (
           <p className="px-5 py-5 text-sm text-slate-400 text-center">No active sessions</p>
         ) : (
           <ul className="divide-y divide-slate-100">
-            {activeSessions.map((session) => (
-              <li key={session.id} className="px-5 py-3.5 flex items-start gap-3.5">
+            {sessions.map((session) => (
+              <li key={session.jti} className="px-5 py-3.5 flex items-start gap-3.5">
                 <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  {session.os === 'iOS' ? (
-                    <svg className="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" />
-                    </svg>
-                  ) : (
-                    <svg className="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
-                    </svg>
-                  )}
+                  <svg className="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
+                  </svg>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-semibold text-slate-800">{session.device}</p>
-                    {session.current && (
+                    <p className="text-sm font-semibold text-slate-800 font-mono text-xs">{session.jti.slice(0, 8)}…</p>
+                    {session.is_current && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5">
                         <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
                         Current
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-400 mt-0.5">{session.browser} · {session.location}</p>
-                  <p className="text-xs text-slate-400">{session.lastActive}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Created {new Date(session.created_at).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Expires {new Date(session.expires_at).toLocaleString()}
+                  </p>
                 </div>
-                {!session.current && (
+                {!session.is_current && (
                   <button
-                    onClick={() => setRevokedSessions(prev => [...prev, session.id])}
-                    className="flex-shrink-0 text-xs font-semibold text-red-500 hover:text-red-700 border border-red-100 hover:border-red-200 hover:bg-red-50 rounded-lg px-2.5 py-1.5 transition-all mt-0.5 active:scale-95"
+                    onClick={() => handleRevoke(session.jti)}
+                    disabled={revokingJti === session.jti}
+                    className="flex-shrink-0 text-xs font-semibold text-red-500 hover:text-red-700 border border-red-100 hover:border-red-200 hover:bg-red-50 rounded-lg px-2.5 py-1.5 transition-all mt-0.5 active:scale-95 disabled:opacity-40"
                   >
-                    Revoke
+                    {revokingJti === session.jti ? '…' : 'Revoke'}
                   </button>
                 )}
               </li>
@@ -497,6 +539,22 @@ export default function App() {
   const [isCreating, setIsCreating] = useState(false)
   const [prefillText, setPrefillText] = useState('')
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [agentsOnline, setAgentsOnline] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    async function checkHealth() {
+      try {
+        const r = await fetch('/health')
+        if (!cancelled) setAgentsOnline(r.ok)
+      } catch {
+        if (!cancelled) setAgentsOnline(false)
+      }
+    }
+    checkHealth()
+    const id = setInterval(checkHealth, 60_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
 
   const addToast = useCallback((message: string, variant: ToastVariant = 'info') => {
     const id = ++_toastId
@@ -658,8 +716,10 @@ export default function App() {
         {/* System status */}
         <div className="px-4 py-3 border-t border-white/5">
           <div className="flex items-center gap-2 mb-3">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" aria-hidden="true" />
-            <span className="text-[11px] text-slate-500 font-medium">4 AI agents online</span>
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${agentsOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} aria-hidden="true" />
+            <span className="text-[11px] text-slate-500 font-medium">
+              {agentsOnline ? '4 AI agents online' : 'backend offline'}
+            </span>
           </div>
           <button
             onClick={() => navTo('account')}
@@ -762,6 +822,7 @@ export default function App() {
                   isSubmitting={isCreating}
                   initialText={prefillText}
                   greeting={greeting}
+                  agentsOnline={agentsOnline}
                 />
                 {submitError && (
                   <p className="mt-3 text-sm text-red-600 text-center">{submitError}</p>

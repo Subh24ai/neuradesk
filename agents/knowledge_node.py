@@ -15,8 +15,9 @@ from tracing.langsmith import traceable
 log = structlog.get_logger(__name__)
 
 # Cross-encoder scores below this threshold indicate the KB has no useful answer.
+# ms-marco-MiniLM-L-6-v2 sigmoid scores: > 0.35 = plausible match; < 0.35 = off-topic.
 # Force confidence low so the escalation router picks it up.
-_RAG_SCORE_THRESHOLD: float = 0.0
+_RAG_SCORE_THRESHOLD: float = 0.35
 
 _RESOLUTION_SYSTEM_PROMPT: str = (
     "You are an IT/HR support assistant. "

@@ -31,9 +31,12 @@ from api.models import (
     OtpVerifyRequest,
     RegisterRequest,
     ResetPasswordRequest,
+    SessionListResponse,
+    SessionResponse,
     TokenBlocklistModel,
     TokenResponse,
     UserModel,
+    UserSessionModel,
     get_db,
 )
 
@@ -124,6 +127,29 @@ def _decode_token(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
         )
+
+
+# ── Session tracking ─────────────────────────────────────────────────────────
+
+
+def _record_session(token_str: str, db: Session) -> None:
+    """Decode a freshly issued token and insert a UserSessionModel row.
+
+    Silently skips on any error so a DB hiccup never blocks login.
+    """
+    try:
+        payload = jwt.decode(token_str, _SECRET_KEY, algorithms=[_ALGORITHM])
+        jti = payload.get("jti")
+        user_id = payload.get("sub")
+        exp = payload.get("exp")
+        if not (jti and user_id and exp):
+            return
+        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+        db.add(UserSessionModel(jti=jti, user_id=user_id, expires_at=expires_at))
+        # flush so errors surface before the outer commit
+        db.flush()
+    except Exception:
+        log.warning("auth.record_session.failed")
 
 
 # ── Org utilities ─────────────────────────────────────────────────────────────
@@ -413,10 +439,13 @@ def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(ge
 
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
     log.info("auth.verify_otp.success", user_id=user.id, org_id=user.org_id)
-    return TokenResponse(access_token=create_access_token(
+    token_str = create_access_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
-    ))
+    )
+    _record_session(token_str, db)
+    db.commit()
+    return TokenResponse(access_token=token_str)
 
 
 @auth_router.post(
@@ -517,10 +546,13 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
 
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
     log.info("auth.reset_password.success", user_id=user.id)
-    return TokenResponse(access_token=create_access_token(
+    token_str = create_access_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
-    ))
+    )
+    _record_session(token_str, db)
+    db.commit()
+    return TokenResponse(access_token=token_str)
 
 
 @auth_router.post(
@@ -548,10 +580,13 @@ def refresh_token(
         )
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
     log.info("auth.refresh", user_id=user.id)
-    return TokenResponse(access_token=create_access_token(
+    token_str = create_access_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
-    ))
+    )
+    _record_session(token_str, db)
+    db.commit()
+    return TokenResponse(access_token=token_str)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -603,10 +638,13 @@ def change_password(
     db.commit()
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
     log.info("auth.change_password", user_id=user.id)
-    return TokenResponse(access_token=create_access_token(
+    token_str = create_access_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
-    ))
+    )
+    _record_session(token_str, db)
+    db.commit()
+    return TokenResponse(access_token=token_str)
 
 
 @auth_router.post("/logout", summary="Invalidate the current Bearer token")
@@ -630,6 +668,103 @@ def logout(
     return {"message": "Logged out successfully"}
 
 
+@auth_router.get(
+    "/sessions",
+    response_model=SessionListResponse,
+    summary="List active sessions for the current user",
+)
+def list_sessions(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: Session = Depends(get_db),
+) -> SessionListResponse:
+    """Return all non-expired, non-revoked sessions for the authenticated user.
+
+    The is_current flag is True for the session matching the caller's own JTI.
+    """
+    payload = _decode_token(credentials.credentials)
+    caller_jti: Optional[str] = payload.get("jti")
+    user_id: Optional[str] = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
+        )
+
+    now = datetime.now(timezone.utc)
+    rows = (
+        db.query(UserSessionModel)
+        .filter(
+            UserSessionModel.user_id == user_id,
+            UserSessionModel.expires_at > now,
+        )
+        .order_by(UserSessionModel.created_at.desc())
+        .all()
+    )
+
+    revoked_jtis: set[str] = {
+        r.jti
+        for r in db.query(TokenBlocklistModel.jti)
+        .filter(TokenBlocklistModel.jti.in_([r.jti for r in rows]))
+        .all()
+    }
+
+    sessions = [
+        SessionResponse(
+            jti=r.jti,
+            created_at=r.created_at,
+            expires_at=r.expires_at,
+            is_current=(r.jti == caller_jti),
+        )
+        for r in rows
+        if r.jti not in revoked_jtis
+    ]
+    log.info("auth.list_sessions", user_id=user_id, count=len(sessions))
+    return SessionListResponse(sessions=sessions, total=len(sessions))
+
+
+@auth_router.delete(
+    "/sessions/{jti}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a specific session by JTI (remote sign-out)",
+)
+def revoke_session(
+    jti: str,
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: Session = Depends(get_db),
+) -> None:
+    """Add the given JTI to the token blocklist, immediately invalidating that session.
+
+    Returns 404 if the session does not belong to the authenticated user.
+    Returns 409 if the caller tries to revoke their own current session (use /auth/logout instead).
+    """
+    payload = _decode_token(credentials.credentials)
+    caller_jti: Optional[str] = payload.get("jti")
+    user_id: Optional[str] = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
+        )
+    if jti == caller_jti:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "Use /auth/logout to end your current session", "code": "USE_LOGOUT"},
+        )
+
+    session = db.get(UserSessionModel, jti)
+    if not session or session.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Session not found", "code": "SESSION_NOT_FOUND"},
+        )
+
+    if not db.get(TokenBlocklistModel, jti):
+        db.add(TokenBlocklistModel(jti=jti, expires_at=session.expires_at))
+        db.commit()
+
+    log.info("auth.revoke_session", jti=jti, user_id=user_id)
+
+
 @auth_router.post("/login", response_model=TokenResponse, summary="Login with email + password")
 @_limiter.limit("20/minute")
 def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
@@ -648,9 +783,12 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) ->
             )
         org = db.get(OrganizationModel, user.org_id) if user.org_id else None
         log.info("auth.login", user_id=user.id, org_id=user.org_id)
-        return TokenResponse(access_token=create_access_token(
+        token_str = create_access_token(
             user.id, user.email, user.org_id or "", org.name if org else "", user.role
-        ))
+        )
+        _record_session(token_str, db)
+        db.commit()
+        return TokenResponse(access_token=token_str)
     except HTTPException:
         raise
     except Exception as exc:

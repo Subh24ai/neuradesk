@@ -11,6 +11,7 @@ from typing import Optional
 import structlog
 
 from agents.state import TicketState
+from core.security import apply_injection_guard
 from dspy_modules.triage import classify
 from tracing.langsmith import traceable
 
@@ -183,8 +184,13 @@ def intake_node(state: TicketState) -> TicketState:
     # Prefer vision output over raw text for classification.
     classify_text: str = extracted_text if extracted_text is not None else raw_text
 
+    # ── Injection guard — runs before classification ──────────────────────────
+    # Detects adversarial prompt patterns and caps confidence so the graph
+    # escalates to a human rather than acting on injected instructions.
+
     # ── DSPy classification ────────────────────────────────────────────────────
-    category, confidence = classify(classify_text)
+    category, raw_confidence = classify(classify_text)
+    confidence = apply_injection_guard(classify_text, raw_confidence)
 
     # ── Entities + priority ───────────────────────────────────────────────────
     entities = _extract_entities(classify_text)

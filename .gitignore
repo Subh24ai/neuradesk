@@ -39,6 +39,9 @@ dspy_modules/compiled/
 # Audit log (runtime-generated, not source-controlled)
 services/audit.jsonl
 
+# Claude Code session memory — not app source code
+memory/
+
 # Docker
 .dockerignore
 

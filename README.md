@@ -4,11 +4,13 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen)](tests/)
 
-## Demo
+## Live Demo
 
-> Demo video coming soon — submit a ticket at [localhost:3000](http://localhost:3000) to see the agent timeline live
+> **[https://neuradesk-112430812621.us-central1.run.app](https://neuradesk-112430812621.us-central1.run.app)** — live on GCP Cloud Run
+>
+> Register → submit a ticket → watch the 4-node agent timeline resolve it in real time.
 
 ---
 
@@ -41,7 +43,7 @@ graph TD
 
 | Layer | Technology |
 |---|---|
-| Orchestration | LangGraph 0.2, typed `TicketState` |
+| Orchestration | LangGraph 1.2, typed `TicketState` |
 | RAG | FAISS + rank-bm25 + sentence-transformers cross-encoder |
 | Prompt optimization | DSPy 2.5 |
 | LLM | Groq (llama-3.3-70b-versatile) — swappable via `LLM_PROVIDER` env var (Anthropic/OpenAI supported) |
@@ -62,8 +64,9 @@ graph TD
 - ✅ Production safety — explicit confirmation gate blocks all destructive API calls
 - ✅ Auto-escalation with complete agent state forwarded to the human queue
 - ✅ LangSmith tracing on every node — no silent agent execution
-- ✅ JWT auth, JSON-lines audit log (SHA-256 token hash, latency), structured errors
+- ✅ JWT auth + session management (GET /auth/sessions, remote revocation), JSON-lines audit log, structured errors
 - ✅ RAGAS evaluation suite with CI enforcement on faithfulness and answer relevance
+- ✅ Prompt injection guard — detects `system:`, role-override, and jailbreak patterns; caps confidence to 0.3 so adversarial tickets escalate safely
 
 ## Quickstart
 
@@ -144,17 +147,20 @@ python3 tests/load_test.py
 neuradesk/
 ├── agents/              # LangGraph nodes and typed TicketState
 │   ├── state.py         # Single TypedDict threaded through every node
-│   ├── graph.py         # Wiring, conditional routing, run_ticket() entry point
+│   ├── graph.py         # Wiring, conditional routing, entry point
 │   ├── intake_node.py   # Category · intent · priority · confidence
-│   ├── knowledge_node.py# FAISS + BM25 retrieval (Week 2)
+│   ├── knowledge_node.py# FAISS + BM25 retrieval + cross-encoder reranking
 │   ├── action_node.py   # Enterprise API dispatch + destructive-action gate
 │   └── escalation_node.py # Human handoff with full state
-├── api/                 # FastAPI app — auth, ticket routes, WebSocket stream
+├── api/                 # FastAPI app — auth, ticket routes, WebSocket stream, admin SSE
+├── core/                # LLM factory, DSPy config, security (injection guard)
+├── notifications/       # Slack incoming-webhook alerts
+├── storage/             # GCS image upload utility
 ├── services/            # Mock ITSM/HR endpoints + async JSON-lines audit log
-├── rag/                 # Retriever (Week 2)
-├── dspy_modules/        # DSPy signatures and compiled classifiers (Week 2)
+├── rag/                 # Retriever (FAISS + BM25 + cross-encoder)
+├── dspy_modules/        # DSPy signatures and compiled classifiers
 ├── tracing/             # LangSmith @traceable helpers, trace URL utilities
-├── tests/               # pytest suite — graph logic, API routes, enterprise API
+├── tests/               # pytest suite — agents, API, RAG, security
 ├── infra/               # Dockerfile, GCP Cloud Run config
 └── docker-compose.yml   # PostgreSQL · backend · enterprise mock API
 ```
@@ -171,6 +177,13 @@ neuradesk/
 | `GET` | `/tickets/` | JWT | Last 20 tickets for the authenticated user |
 | `GET` | `/tickets/{id}` | JWT | Full ticket state by ID |
 | `WS` | `/ws/{ticket_id}` | — | Stream per-node status events in real time |
+| `POST` | `/tickets/{id}/confirm-action` | JWT | Confirm a destructive action awaiting authorization |
+| `POST` | `/tickets/{id}/cancel` | JWT | Cancel a destructive action (routes to escalation) |
+| `GET` | `/auth/sessions` | JWT | List active sessions for the current user |
+| `DELETE` | `/auth/sessions/{jti}` | JWT | Revoke a session by JTI (remote sign-out) |
+| `GET` | `/admin/stream` | JWT (query) | SSE stream of resolved/escalated ticket events (admin) |
+| `GET` | `/.well-known/agent.json` | — | A2A Agent Card |
+| `POST` | `/tasks/send` | — | A2A synchronous knowledge-retrieval task |
 
 ### Enterprise Mock API — port 8001
 
@@ -214,10 +227,20 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 | ✅ WebSocket no reconnect logic | Exponential backoff (1 s / 2 s / 4 s) + fetch on reconnect |
 | ✅ No Slack notifications on escalation | Slack incoming-webhook via `notifications/slack.py` |
 
+### Fixed in v1.2
+
+| Issue | Fix |
+|---|---|
+| ✅ Hardcoded false `<2s` stat in UI | Updated to `~4s` to match BENCHMARKS.md P50 |
+| ✅ No prompt injection filter | `core/security.py` — 7 patterns, confidence capped to 0.3, 13 tests |
+| ✅ RAG threshold disabled (0.0) | Threshold set to 0.35; off-topic tickets now escalate instead of hallucinating |
+| ✅ Mock sessions in Account panel | Real `GET /auth/sessions` + `DELETE /auth/sessions/{jti}` endpoints wired to UI |
+| ✅ Docker inter-container env var mismatch | `ENTERPRISE_API_URL` → `ENTERPRISE_API_BASE_URL` across codebase |
+| ✅ GCP deployment live | Cloud Run URL — see Live Demo above |
+
 ### Remaining
 
 - Mock enterprise APIs — `services/enterprise_api.py` stubs only; no real ITSM/HR integration
-- No prompt injection filter — free-text ticket input is passed directly to the LLM
 - Groq single point of failure — no fallback LLM configured
 - `audit.jsonl` unbounded — no rotation or max-size policy
 - RAG answer relevancy 0.44 — corpus too small; improves with more KB documents
@@ -230,6 +253,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
 - ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
 - ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green
+- ✅ **v1.2 security** — prompt injection guard, RAG threshold fix, real session management, Docker env fix, GCP Cloud Run deploy — 183 tests green
 
 ---
 

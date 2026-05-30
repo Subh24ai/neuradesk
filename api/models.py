@@ -201,6 +201,22 @@ class TokenBlocklistModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class UserSessionModel(Base):
+    """Active user session — one row per issued JWT, used for session listing and remote revocation."""
+
+    __tablename__ = "user_sessions"
+
+    jti: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TicketCommentModel(Base):
     """Comment or admin note attached to a ticket."""
 
@@ -451,6 +467,24 @@ class CommentListResponse(BaseModel):
 
 
 # ── Invite schemas ────────────────────────────────────────────────────────────
+
+class SessionResponse(BaseModel):
+    """Single active session returned by GET /auth/sessions."""
+
+    jti: str
+    created_at: datetime
+    expires_at: datetime
+    is_current: bool
+
+    model_config = {"from_attributes": True}
+
+
+class SessionListResponse(BaseModel):
+    """List of active sessions returned by GET /auth/sessions."""
+
+    sessions: list[SessionResponse]
+    total: int
+
 
 class InviteCreateRequest(BaseModel):
     """POST /admin/invites body."""

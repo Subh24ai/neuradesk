@@ -129,8 +129,8 @@ function BrandPanel() {
       <div className="relative z-10 mt-auto pt-7 border-t border-white/10 grid grid-cols-3 gap-4">
         {[
           { val: '4', label: 'AI Agents' },
-          { val: '<2s', label: 'Avg resolve' },
-          { val: 'SOC2', label: 'Ready' },
+          { val: '~4s', label: 'Avg resolve' },
+          { val: 'MIT', label: 'Open Source' },
         ].map(({ val, label }) => (
           <div key={label} className="text-center">
             <p className="text-white font-bold text-lg leading-none">{val}</p>
@@ -229,7 +229,7 @@ export default function LoginForm({ onLogin }: Props) {
     next[index] = digit
     setOtpDigits(next)
     if (digit && index < 5) otpRefs.current[index + 1]?.focus()
-    if (digit && index === 5 && next.every((d) => d !== '')) handleOtpSubmit(next.join(''))
+    if (digit && index === 5 && next.every((d) => d !== '') && step !== 'reset-otp') handleOtpSubmit(next.join(''))
   }
 
   function handleOtpKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
@@ -246,7 +246,7 @@ export default function LoginForm({ onLogin }: Props) {
     for (let i = 0; i < text.length; i++) next[i] = text[i]
     setOtpDigits(next)
     otpRefs.current[Math.min(text.length, 5)]?.focus()
-    if (next.every((d) => d !== '')) handleOtpSubmit(next.join(''))
+    if (next.every((d) => d !== '') && step !== 'reset-otp') handleOtpSubmit(next.join(''))
   }
 
   async function handleResend() {
@@ -273,14 +273,16 @@ export default function LoginForm({ onLogin }: Props) {
     setError(null)
     setLoading(true)
     try {
-      await fetch('/auth/forgot-password', {
+      const res = await fetch('/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail }),
       })
+      const data = res.ok ? await res.json() as { dev_otp?: string } : {}
       setPendingEmail(forgotEmail)
       setOtpDigits(Array(6).fill(''))
       setNewPassword('')
+      setDevOtp(data.dev_otp ?? null)
       setResendCooldown(60)
       setStep('reset-otp')
       setTimeout(() => otpRefs.current[0]?.focus(), 50)
@@ -407,7 +409,7 @@ export default function LoginForm({ onLogin }: Props) {
   // ── Shared OTP input ──────────────────────────────────────────────────────────
   function OtpInputRow() {
     return (
-      <div className="flex gap-2">
+      <div className="flex gap-2 justify-center">
         {otpDigits.map((digit, i) => (
           <input
             key={i}
@@ -419,10 +421,10 @@ export default function LoginForm({ onLogin }: Props) {
             onChange={(e) => handleOtpInput(i, e.target.value)}
             onKeyDown={(e) => handleOtpKeyDown(i, e)}
             onPaste={i === 0 ? handleOtpPaste : undefined}
-            className={`flex-1 min-w-0 h-14 text-center text-2xl font-bold border-2 rounded-xl text-slate-900 focus:outline-none transition-all caret-transparent ${
+            className={`w-11 h-12 text-center text-xl font-bold border-2 rounded-xl text-slate-900 focus:outline-none transition-all caret-transparent shrink-0 ${
               digit
                 ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                : 'border-slate-200 bg-white focus:border-indigo-400 focus:bg-indigo-50/30'
+                : 'border-slate-300 bg-white focus:border-indigo-400 focus:bg-indigo-50/30'
             }`}
             aria-label={`Digit ${i + 1}`}
           />
@@ -506,7 +508,7 @@ export default function LoginForm({ onLogin }: Props) {
 
       {/* OTP inputs */}
       <div>
-        <OtpInputRow />
+        {OtpInputRow()}
         {/* Progress dots */}
         <div className="flex justify-center gap-1.5 mt-3">
           {Array(6).fill(null).map((_, i) => (
@@ -583,7 +585,7 @@ export default function LoginForm({ onLogin }: Props) {
 
   // ── Reset password OTP ────────────────────────────────────────────────────────
   if (step === 'reset-otp') return shell(
-    <div className="px-8 py-7 space-y-5">
+    <div className="px-8 py-7 flex flex-col gap-5">
         <div>
           <h2 className="text-lg font-bold text-slate-900">New password</h2>
           <p className="mt-1 text-sm text-slate-500">
@@ -592,7 +594,8 @@ export default function LoginForm({ onLogin }: Props) {
         </div>
         <div>
           <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-3">Reset code</p>
-          <OtpInputRow />
+          {OtpInputRow()}
+          <p className="text-xs text-slate-400 mt-2">Check your email for the 6-digit code</p>
         </div>
         <InputField id="new-pw" label="New password" type="password" required
           value={newPassword} onChange={setNewPassword} placeholder="Min 8 characters" minLength={8} />
@@ -603,7 +606,7 @@ export default function LoginForm({ onLogin }: Props) {
           disabled={loading || otpDigits.some((d) => !d) || newPassword.length < 8}
           className="w-full bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl py-3 text-sm font-semibold disabled:opacity-40 transition-all shadow-sm hover:shadow-md"
         >
-          {loading ? <span className="flex items-center justify-center gap-2"><Spinner />Resetting…</span> : 'Reset & sign in'}
+          {loading ? <span className="flex items-center justify-center gap-2"><Spinner />Resetting…</span> : 'Reset Password'}
         </button>
         <div className="flex items-center justify-between text-sm">
           <button type="button" onClick={() => { setStep('forgot'); setError(null) }} className="text-slate-400 hover:text-slate-700 font-medium transition-colors">
@@ -614,6 +617,21 @@ export default function LoginForm({ onLogin }: Props) {
             {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend code'}
           </button>
         </div>
+
+        {devOtp && (
+          <details className="rounded-xl border border-dashed border-amber-300 bg-amber-50 text-xs text-amber-800">
+            <summary className="cursor-pointer px-3.5 py-2.5 font-semibold select-none list-none flex items-center gap-2">
+              <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+              </svg>
+              Dev mode — click to reveal reset code
+            </summary>
+            <div className="px-3.5 pb-3 pt-1 flex items-center justify-between gap-3">
+              <span className="text-slate-500">SMTP not configured — real emails are not sent in dev.</span>
+              <span className="font-mono font-bold text-base tracking-widest text-amber-900 whitespace-nowrap">{devOtp}</span>
+            </div>
+          </details>
+        )}
       </div>
   )
 

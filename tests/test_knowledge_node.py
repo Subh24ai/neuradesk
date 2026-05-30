@@ -172,6 +172,33 @@ class TestKnowledgeNode:
         assert result["retrieved_chunks"] is not None
         assert result["status"] == "acting"
 
+    def test_low_rag_score_triggers_escalation(self) -> None:
+        """A top-chunk cross-encoder score below 0.35 sets confidence to 0.3.
+
+        Covers the case where a ticket is completely outside the KB — e.g.
+        'book me a flight to Dubai'.  The retriever may return chunks but the
+        reranker assigns sub-threshold scores, so the node should downgrade
+        confidence so the graph router escalates instead of hallucinating a
+        resolution.
+        """
+        off_topic_chunks: list[RetrievedChunk] = [
+            {"source": "password-reset-runbook.md", "content": "Reset via IT portal.", "score": 0.10},
+            {"source": "leave-policy.md", "content": "Leave requests go via HR.", "score": 0.05},
+        ]
+        state = _base_state(
+            raw_text="Please book me a flight to Dubai next Friday",
+            category="unknown",
+        )
+
+        with patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(off_topic_chunks)):
+            result = knowledge_node(state)
+
+        assert result["confidence"] == pytest.approx(0.3), (
+            "Off-topic ticket with sub-threshold score must have confidence 0.3 so the graph escalates"
+        )
+        assert result["status"] == "acting"
+        assert result["retrieved_chunks"] == off_topic_chunks
+
     def test_extracted_text_preferred_over_raw_text_for_query(self) -> None:
         """When extracted_text is set (image ticket), it is used in the query."""
         chunks = _make_chunks(1)

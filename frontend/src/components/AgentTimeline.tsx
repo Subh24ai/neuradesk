@@ -266,7 +266,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
   const allSteps = [...steps, ...(escalationStep ? [escalationStep] : [])]
   const doneCount = allSteps.filter((s) => s.isDone).length
   const inProgressIdx = isComplete ? -1 : doneCount
-  const isAwaiting = finalSnapshot.status === 'awaiting_confirmation' && confirmStatus === 'idle'
+  const isAwaiting = finalSnapshot.status === 'awaiting_confirmation' && (confirmStatus === 'idle' || confirmStatus === 'pending')
   const isEscalated = finalSnapshot.status === 'escalated'
     || (finalSnapshot.status === 'awaiting_confirmation' && confirmStatus === 'cancelled')
     || (!isAwaiting && Boolean(finalSnapshot.escalation_reason) && finalSnapshot.status !== 'resolved')
