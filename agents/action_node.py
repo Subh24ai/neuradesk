@@ -184,7 +184,7 @@ async def action_node(state: TicketState) -> TicketState:
     try:
         if endpoint:
             base_url = state.get("org_api_url") or os.getenv("ENTERPRISE_API_BASE_URL", "http://localhost:8001")
-            secret = state.get("org_api_secret") or os.getenv("ENTERPRISE_API_SECRET", "")
+            secret = os.getenv("ENTERPRISE_API_SECRET", "")
             payload = _build_payload(intent, state, fmt)
             action_result: dict[str, Any] = await _post_enterprise(
                 endpoint, payload, base_url, secret

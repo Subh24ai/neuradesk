@@ -43,7 +43,6 @@ def _base_state(**overrides) -> TicketState:
         "org_name": "Test Corp",
         "org_kb_docs": [],
         "org_api_url": None,
-        "org_api_secret": None,
         "support_email": "",
         "user_email": "",
         "slack_webhook_url": None,

@@ -311,7 +311,6 @@ def confirm_action(
     # Load org context (mirrors WS handler logic).
     org_kb_docs: list[dict] = []
     org_api_url: Optional[str] = None
-    org_api_secret: Optional[str] = None
     org_name: str = ""
     support_email: str = os.getenv("SUPPORT_EMAIL", "")
     slack_webhook_url: Optional[str] = None
@@ -335,7 +334,6 @@ def confirm_action(
         org_name=org_name,
         org_kb_docs=org_kb_docs,
         org_api_url=org_api_url,
-        org_api_secret=org_api_secret,
         raw_image_b64=ticket.raw_image_b64,
         support_email=support_email,
         user_email=current_user.email,
@@ -499,7 +497,6 @@ async def websocket_ticket(
         # Load org context: per-org KB docs and API config overrides.
         org_kb_docs: list[dict] = []
         org_api_url: Optional[str] = None
-        org_api_secret: Optional[str] = None
         org_name: str = ""
         support_email: str = os.getenv("SUPPORT_EMAIL", "")
         slack_webhook_url: Optional[str] = None
@@ -513,7 +510,6 @@ async def websocket_ticket(
             org_cfg = db.get(OrgConfigModel, ticket.org_id)
             if org_cfg:
                 org_api_url = org_cfg.itsm_url or None
-                org_api_secret = None  # secret managed server-side only
                 support_email = org_cfg.smtp_host and support_email or support_email
                 slack_webhook_url = org_cfg.slack_webhook_url or None
             org_obj = db.get(OrganizationModel, ticket.org_id)
@@ -525,7 +521,6 @@ async def websocket_ticket(
             org_name=org_name,
             org_kb_docs=org_kb_docs,
             org_api_url=org_api_url,
-            org_api_secret=org_api_secret,
             raw_image_b64=ticket.raw_image_b64,
             support_email=support_email,
             user_email=owner.email if owner else "",
