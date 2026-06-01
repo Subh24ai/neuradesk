@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import time
 from typing import Any
 
 import httpx
@@ -40,7 +40,7 @@ _RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
 
 
 @traceable(name="_post_enterprise", run_type="tool", metadata={"layer": "enterprise_api"})
-def _post_enterprise(
+async def _post_enterprise(
     endpoint: str,
     payload: dict[str, Any],
     base_url: str,
@@ -54,10 +54,10 @@ def _post_enterprise(
     last_exc: Exception | None = None
     for attempt, delay in enumerate([(0.0)] + _RETRY_DELAYS, start=1):
         if delay:
-            time.sleep(delay)
+            await asyncio.sleep(delay)
         try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post(
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
                     f"{base_url}{endpoint}",
                     json=payload,
                     headers={"Authorization": f"Bearer {secret}"},
@@ -126,7 +126,7 @@ def _build_payload(
 
 
 @traceable(name="action_node", run_type="chain", metadata={"agent": "action", "version": "1.0"})
-def action_node(state: TicketState) -> TicketState:
+async def action_node(state: TicketState) -> TicketState:
     """Execute the appropriate enterprise API call for the resolved intent.
 
     Routing:
@@ -186,7 +186,7 @@ def action_node(state: TicketState) -> TicketState:
             base_url = state.get("org_api_url") or os.getenv("ENTERPRISE_API_BASE_URL", "http://localhost:8001")
             secret = state.get("org_api_secret") or os.getenv("ENTERPRISE_API_SECRET", "")
             payload = _build_payload(intent, state, fmt)
-            action_result: dict[str, Any] = _post_enterprise(
+            action_result: dict[str, Any] = await _post_enterprise(
                 endpoint, payload, base_url, secret
             )
         else:
