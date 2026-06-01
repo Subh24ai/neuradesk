@@ -100,7 +100,7 @@ class TestTaskSend:
     def test_task_send_returns_completed(self, test_client) -> None:
         """Valid query returns status.state == 'completed' with an artifact."""
         with patch("api.a2a._run_knowledge_query", return_value=_MOCK_QUERY_RESULT):
-            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD)
+            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD, headers={"Authorization": "Bearer test-key"})
 
         assert r.status_code == 200
         body = r.json()
@@ -109,7 +109,7 @@ class TestTaskSend:
     def test_task_send_artifact_contains_answer(self, test_client) -> None:
         """Resolution text appears in the first artifact's text part."""
         with patch("api.a2a._run_knowledge_query", return_value=_MOCK_QUERY_RESULT):
-            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD)
+            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD, headers={"Authorization": "Bearer test-key"})
 
         artifact = r.json()["artifacts"][0]
         text = artifact["parts"][0]["text"]
@@ -118,7 +118,7 @@ class TestTaskSend:
     def test_task_send_metadata_includes_sources(self, test_client) -> None:
         """Response metadata lists source document paths."""
         with patch("api.a2a._run_knowledge_query", return_value=_MOCK_QUERY_RESULT):
-            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD)
+            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD, headers={"Authorization": "Bearer test-key"})
 
         meta = r.json()["metadata"]
         assert meta["chunks_retrieved"] == 1
@@ -126,13 +126,13 @@ class TestTaskSend:
 
     def test_task_send_empty_parts_returns_failed(self, test_client) -> None:
         """Message with no text parts returns status.state == 'failed'."""
-        r = test_client.post("/tasks/send", json=_EMPTY_PARTS_PAYLOAD)
+        r = test_client.post("/tasks/send", json=_EMPTY_PARTS_PAYLOAD, headers={"Authorization": "Bearer test-key"})
         assert r.json()["status"]["state"] == "failed"
 
     def test_task_send_echoes_task_id(self, test_client) -> None:
         """Response id matches the submitted task id."""
         with patch("api.a2a._run_knowledge_query", return_value=_MOCK_QUERY_RESULT):
-            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD)
+            r = test_client.post("/tasks/send", json=_TASK_PAYLOAD, headers={"Authorization": "Bearer test-key"})
         assert r.json()["id"] == "test-task-001"
 
 
@@ -144,7 +144,7 @@ class TestTaskSendSubscribe:
 
     def _get_events(self, test_client, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Consume the full SSE response and return the parsed event list."""
-        with test_client.stream("POST", "/tasks/sendSubscribe", json=payload) as resp:
+        with test_client.stream("POST", "/tasks/sendSubscribe", json=payload, headers={"Authorization": "Bearer test-key"}) as resp:
             assert resp.status_code == 200
             raw = resp.read().decode()
         return _parse_sse_events(raw)
