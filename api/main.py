@@ -197,7 +197,7 @@ def list_tickets(
         log.exception("tickets.list.error", user_id=current_user.id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(exc), "code": "TICKET_LIST_FAILED"},
+            detail={"error": "Request could not be processed.", "code": "TICKET_LIST_FAILED"},
         )
 
 
@@ -242,7 +242,7 @@ def create_ticket(
         log.exception("tickets.create.error", ticket_id=ticket_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(exc), "code": "TICKET_CREATE_FAILED", "ticket_id": ticket_id},
+            detail={"error": "Request could not be processed.", "code": "TICKET_CREATE_FAILED", "ticket_id": ticket_id},
         )
 
 
@@ -276,7 +276,7 @@ def get_ticket(
         log.exception("tickets.get.error", ticket_id=ticket_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(exc), "code": "TICKET_GET_FAILED", "ticket_id": ticket_id},
+            detail={"error": "Request could not be processed.", "code": "TICKET_GET_FAILED", "ticket_id": ticket_id},
         )
 
 
@@ -617,7 +617,7 @@ async def websocket_ticket(
     except Exception as exc:
         log.exception("ws.error", ticket_id=ticket_id)
         try:
-            await websocket.send_json({"error": str(exc), "code": "WS_ERROR"})
+            await websocket.send_json({"error": "An internal error occurred.", "code": "WS_ERROR"})
         except Exception:
             pass
     finally:

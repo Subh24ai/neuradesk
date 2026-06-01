@@ -378,7 +378,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         log.exception("auth.register.error", email=req.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(exc), "code": "REGISTER_FAILED"},
+            detail={"error": "Registration failed. Please try again.", "code": "REGISTER_FAILED"},
         )
 
     dev_otp_hint: Optional[str] = None
@@ -795,5 +795,5 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) ->
         log.exception("auth.login.error", email=req.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(exc), "code": "LOGIN_FAILED"},
+            detail={"error": "Authentication failed. Please try again.", "code": "LOGIN_FAILED"},
         )
