@@ -39,6 +39,8 @@ if not _A2A_API_KEY:
         "A2A_API_KEY env var is not set — refusing to start with A2A task endpoints unauthenticated"
     )
 
+_A2A_QUERY_TIMEOUT: int = int(os.environ.get("A2A_QUERY_TIMEOUT_SECONDS", "30"))
+
 _a2a_bearer = HTTPBearer(auto_error=True)
 
 
@@ -320,7 +322,20 @@ async def task_send_subscribe(
                 )
 
         threading.Thread(target=_run_in_thread, daemon=True).start()
-        status, answer, chunks = await result_queue.get()
+        try:
+            status, answer, chunks = await asyncio.wait_for(
+                result_queue.get(), timeout=_A2A_QUERY_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            log.error("a2a.task_subscribe.timeout", task_id=task_id, timeout=_A2A_QUERY_TIMEOUT)
+            yield _sse(
+                {
+                    "id": task_id,
+                    "status": {"state": "failed", "timestamp": _now_iso()},
+                    "final": True,
+                }
+            )
+            return
 
         if status == "error":
             log.error("a2a.task_subscribe.error", task_id=task_id, error=answer)
