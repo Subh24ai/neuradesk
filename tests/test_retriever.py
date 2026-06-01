@@ -11,8 +11,19 @@ from rag.retriever import HybridRetriever
 @pytest.fixture(scope="module")
 def retriever() -> HybridRetriever:
     """Build a real HybridRetriever from rag/data/ documents (module-scoped, built once)."""
+    from pathlib import Path
+    _index = Path("faiss_index.bin")
+    _docs_json = Path("faiss_index.docs.json")
+    # Remove stale persisted files so __init__ always builds from the corpus, not disk.
+    _index.unlink(missing_ok=True)
+    _docs_json.unlink(missing_ok=True)
     docs = load_documents()
-    return HybridRetriever(docs)
+    try:
+        yield HybridRetriever(docs)
+    finally:
+        # Remove files written by TestAddDocuments so they do not corrupt future runs.
+        _index.unlink(missing_ok=True)
+        _docs_json.unlink(missing_ok=True)
 
 
 # ── Loader tests ──────────────────────────────────────────────────────────────
