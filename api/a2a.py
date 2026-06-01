@@ -21,7 +21,7 @@ from typing import Any, AsyncGenerator
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agents.knowledge_node import knowledge_node
@@ -40,6 +40,10 @@ if not _A2A_API_KEY:
     )
 
 _A2A_QUERY_TIMEOUT: int = int(os.environ.get("A2A_QUERY_TIMEOUT_SECONDS", "30"))
+_A2A_MAX_CONCURRENT_SUBSCRIPTIONS: int = int(
+    os.environ.get("A2A_MAX_CONCURRENT_SUBSCRIPTIONS", "10")
+)
+_subscribe_semaphore: asyncio.Semaphore = asyncio.Semaphore(_A2A_MAX_CONCURRENT_SUBSCRIPTIONS)
 
 _a2a_bearer = HTTPBearer(auto_error=True)
 
@@ -252,7 +256,7 @@ async def task_send(
 async def task_send_subscribe(
     request: Request,
     _: None = Depends(get_a2a_key),
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Submit a task and receive real-time status updates via Server-Sent Events.
 
     SSE event sequence::
@@ -264,6 +268,7 @@ async def task_send_subscribe(
         data: {"id": ..., "status": {"state": "completed", ...}, "final": true}
 
     Each event is a JSON object on a ``data:`` line, separated by blank lines.
+    Returns 503 immediately when the concurrent subscription limit is reached.
     """
     body: dict[str, Any] = await request.json()
     task_id: str = body.get("id") or str(uuid.uuid4())
@@ -272,107 +277,137 @@ async def task_send_subscribe(
 
     log.info("a2a.task_subscribe", task_id=task_id, query_preview=query[:80])
 
+    # Fail fast: claim a concurrency slot now, at request time, before we commit
+    # to an SSE stream. The acquire MUST happen here rather than inside the
+    # generator — the generator only runs once Starlette starts consuming it,
+    # which is after the 200 + SSE headers are already on the wire, so an
+    # acquire there can no longer reject and would silently queue requests.
+    # locked() + acquire() with no await in between is atomic under asyncio's
+    # single-threaded scheduling, so the acquire below cannot block.
+    if _subscribe_semaphore.locked():
+        log.warning(
+            "a2a.task_subscribe.overloaded",
+            task_id=task_id,
+            limit=_A2A_MAX_CONCURRENT_SUBSCRIPTIONS,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": "Too many concurrent SSE subscriptions. Retry later.",
+                "code": "SUBSCRIBE_OVERLOADED",
+            },
+        )
+    await _subscribe_semaphore.acquire()
+
     async def _event_stream() -> AsyncGenerator[str, None]:
-        """Yield SSE-formatted events: working → artifact → completed."""
+        """Yield SSE-formatted events: working → artifact → completed.
+
+        The concurrency slot claimed in task_send_subscribe is released in the
+        finally block when the stream ends — normally, on timeout, on error, or
+        when the client disconnects (Starlette calls aclose() in all cases).
+        """
 
         def _sse(payload: dict[str, Any]) -> str:
             return f"data: {json.dumps(payload)}\n\n"
 
-        # 1. Working event — immediately signals processing has started.
-        yield _sse(
-            {
-                "id": task_id,
-                "status": {
-                    "state": "working",
-                    "timestamp": _now_iso(),
-                    "message": {
-                        "role": "agent",
-                        "parts": [
-                            {
-                                "type": "text",
-                                "text": "Retrieving from knowledge base…",
-                            }
-                        ],
-                    },
-                },
-            }
-        )
-
-        if not query:
-            yield _sse(
-                {
-                    "id": task_id,
-                    "status": {"state": "failed", "timestamp": _now_iso()},
-                    "final": True,
-                }
-            )
-            return
-
-        # 2. Run retrieval in a background thread (keeps the event loop unblocked).
-        result_queue: asyncio.Queue[tuple[str, Any, Any]] = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def _run_in_thread() -> None:
-            try:
-                answer, chunks = _run_knowledge_query(query)
-                loop.call_soon_threadsafe(result_queue.put_nowait, ("ok", answer, chunks))
-            except Exception as exc:
-                loop.call_soon_threadsafe(
-                    result_queue.put_nowait, ("error", str(exc), [])
-                )
-
-        threading.Thread(target=_run_in_thread, daemon=True).start()
         try:
-            status, answer, chunks = await asyncio.wait_for(
-                result_queue.get(), timeout=_A2A_QUERY_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            log.error("a2a.task_subscribe.timeout", task_id=task_id, timeout=_A2A_QUERY_TIMEOUT)
+            # 1. Working event — immediately signals processing has started.
             yield _sse(
                 {
                     "id": task_id,
-                    "status": {"state": "failed", "timestamp": _now_iso()},
-                    "final": True,
-                }
-            )
-            return
-
-        if status == "error":
-            log.error("a2a.task_subscribe.error", task_id=task_id, error=answer)
-            yield _sse(
-                {
-                    "id": task_id,
-                    "status": {"state": "failed", "timestamp": _now_iso()},
-                    "final": True,
-                }
-            )
-            return
-
-        # 3. Artifact event — streams the resolution text.
-        yield _sse(
-            {
-                "id": task_id,
-                "artifact": {
-                    "name": "resolution",
-                    "index": 0,
-                    "lastChunk": True,
-                    "parts": [{"type": "text", "text": answer}],
-                    "metadata": {
-                        "chunks_retrieved": len(chunks),
-                        "sources": [c.get("source", "") for c in chunks],
+                    "status": {
+                        "state": "working",
+                        "timestamp": _now_iso(),
+                        "message": {
+                            "role": "agent",
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": "Retrieving from knowledge base…",
+                                }
+                            ],
+                        },
                     },
-                },
-            }
-        )
+                }
+            )
 
-        # 4. Completed event — final=True signals end of stream.
-        yield _sse(
-            {
-                "id": task_id,
-                "status": {"state": "completed", "timestamp": _now_iso()},
-                "final": True,
-            }
-        )
+            if not query:
+                yield _sse(
+                    {
+                        "id": task_id,
+                        "status": {"state": "failed", "timestamp": _now_iso()},
+                        "final": True,
+                    }
+                )
+                return
+
+            # 2. Run retrieval in a background thread (keeps the event loop unblocked).
+            result_queue: asyncio.Queue[tuple[str, Any, Any]] = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def _run_in_thread() -> None:
+                try:
+                    answer, chunks = _run_knowledge_query(query)
+                    loop.call_soon_threadsafe(result_queue.put_nowait, ("ok", answer, chunks))
+                except Exception as exc:
+                    loop.call_soon_threadsafe(
+                        result_queue.put_nowait, ("error", str(exc), [])
+                    )
+
+            threading.Thread(target=_run_in_thread, daemon=True).start()
+            try:
+                status, answer, chunks = await asyncio.wait_for(
+                    result_queue.get(), timeout=_A2A_QUERY_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                log.error("a2a.task_subscribe.timeout", task_id=task_id, timeout=_A2A_QUERY_TIMEOUT)
+                yield _sse(
+                    {
+                        "id": task_id,
+                        "status": {"state": "failed", "timestamp": _now_iso()},
+                        "final": True,
+                    }
+                )
+                return
+
+            if status == "error":
+                log.error("a2a.task_subscribe.error", task_id=task_id, error=answer)
+                yield _sse(
+                    {
+                        "id": task_id,
+                        "status": {"state": "failed", "timestamp": _now_iso()},
+                        "final": True,
+                    }
+                )
+                return
+
+            # 3. Artifact event — streams the resolution text.
+            yield _sse(
+                {
+                    "id": task_id,
+                    "artifact": {
+                        "name": "resolution",
+                        "index": 0,
+                        "lastChunk": True,
+                        "parts": [{"type": "text", "text": answer}],
+                        "metadata": {
+                            "chunks_retrieved": len(chunks),
+                            "sources": [c.get("source", "") for c in chunks],
+                        },
+                    },
+                }
+            )
+
+            # 4. Completed event — final=True signals end of stream.
+            yield _sse(
+                {
+                    "id": task_id,
+                    "status": {"state": "completed", "timestamp": _now_iso()},
+                    "final": True,
+                }
+            )
+        finally:
+            _subscribe_semaphore.release()
 
     return StreamingResponse(
         _event_stream(),
