@@ -27,7 +27,10 @@ from api.admin import admin_router, _publish_sse
 from api.auth import auth_router, _decode_token, get_current_user
 from api.email import send_ticket_notification
 from api.org import org_router
+from core.config import get_settings
 from core.dspy_config import configure_dspy
+
+_cfg = get_settings()
 from api.models import (
     Base,
     OrganizationModel,
@@ -544,11 +547,11 @@ async def websocket_ticket(
     db = SessionLocal()
     try:
         ticket = None
-        for _ in range(10):  # up to 2 seconds
+        for _ in range(_cfg.ticket_poll_attempts):
             ticket = db.query(TicketModel).filter_by(id=ticket_id).first()
             if ticket:
                 break
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(_cfg.ticket_poll_interval)
 
         if ticket is None:
             await websocket.send_json({"error": "ticket not found", "code": "TICKET_NOT_FOUND"})

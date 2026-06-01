@@ -3,6 +3,10 @@
 import httpx
 import structlog
 
+from core.config import get_settings
+
+_cfg = get_settings()
+
 log = structlog.get_logger(__name__)
 
 
@@ -21,7 +25,7 @@ def send_slack_escalation(
         f"*Reason:* {reason}"
     )
     try:
-        resp = httpx.post(webhook_url, json={"text": text}, timeout=5.0)
+        resp = httpx.post(webhook_url, json={"text": text}, timeout=_cfg.slack_webhook_timeout)
         resp.raise_for_status()
         log.info("slack.escalation_sent", ticket_id=ticket_id)
     except Exception as exc:

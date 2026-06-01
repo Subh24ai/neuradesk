@@ -4,6 +4,10 @@ import os
 
 import dspy
 
+from core.config import get_settings
+
+_cfg = get_settings()
+
 
 def configure_dspy() -> None:
     """Configure the global DSPy LM from environment variables.
@@ -29,7 +33,7 @@ def configure_dspy() -> None:
         )
     elif provider == "anthropic":
         lm = dspy.LM(
-            "anthropic/claude-sonnet-4-20250514",
+            _cfg.dspy_model,
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         )
     else:

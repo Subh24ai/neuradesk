@@ -5,6 +5,10 @@ from typing import Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from core.config import get_settings
+
+_cfg = get_settings()
+
 
 def get_llm() -> BaseChatModel:
     """Return a LangChain chat model for the configured provider.
@@ -28,7 +32,7 @@ def get_llm() -> BaseChatModel:
         from langchain_anthropic import ChatAnthropic  # type: ignore[import-untyped]
 
         return ChatAnthropic(
-            model="claude-sonnet-4-20250514",
+            model=_cfg.claude_model,
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         )
 

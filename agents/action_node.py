@@ -10,7 +10,10 @@ import httpx
 import structlog
 
 from agents.state import TicketState
+from core.config import get_settings
 from tracing.langsmith import traceable
+
+_cfg = get_settings()
 
 log = structlog.get_logger(__name__)
 
@@ -36,7 +39,7 @@ _PRIORITY_TO_SEVERITY: dict[str, str] = {
 }
 
 
-_RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
+_RETRY_DELAYS: list[float] = _cfg.action_retry_delays
 
 
 @traceable(name="_post_enterprise", run_type="tool", metadata={"layer": "enterprise_api"})
@@ -56,7 +59,7 @@ async def _post_enterprise(
         if delay:
             await asyncio.sleep(delay)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=_cfg.enterprise_api_timeout) as client:
                 resp = await client.post(
                     f"{base_url}{endpoint}",
                     json=payload,

@@ -20,6 +20,7 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from sqlalchemy.orm import Session
 
 from api.email import send_otp_email  # noqa: F401 — re-exported for callers that mock it
+from core.config import get_settings
 
 from api.models import (
     ForgotPasswordRequest,
@@ -59,7 +60,7 @@ def _is_personal_email(email: str) -> bool:
 
 _SECRET_KEY: str = os.environ.get("API_SECRET_KEY", "")
 _ALGORITHM = "HS256"
-_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8-hour sessions
+_TOKEN_EXPIRE_MINUTES: int = get_settings().token_expire_minutes
 _OTP_EXPIRE_MINUTES = 10
 
 def _smtp_configured() -> bool:

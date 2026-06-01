@@ -8,6 +8,10 @@ from email.mime.text import MIMEText
 
 import structlog
 
+from core.config import get_settings
+
+_cfg = get_settings()
+
 log = structlog.get_logger(__name__)
 
 _OTP_EXPIRE_MINUTES = 10
@@ -48,7 +52,7 @@ def _send(to: str, subject: str, text_body: str, html_body: str) -> None:
 
     ctx = ssl.create_default_context()
     try:
-        with smtplib.SMTP(host, _SMTP_PORT(), timeout=15) as server:
+        with smtplib.SMTP(host, _SMTP_PORT(), timeout=_cfg.email_smtp_timeout) as server:
             server.ehlo()
             server.starttls(context=ctx)
             server.login(user, password)

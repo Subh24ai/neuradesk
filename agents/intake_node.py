@@ -11,13 +11,16 @@ from typing import Optional
 import structlog
 
 from agents.state import TicketState
+from core.config import get_settings
 from core.security import apply_injection_guard
 from dspy_modules.triage import classify
 from tracing.langsmith import traceable
 
+_cfg = get_settings()
+
 log = structlog.get_logger(__name__)
 
-_GROQ_VISION_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+_GROQ_VISION_MODEL: str = _cfg.groq_vision_model
 
 _CRITICAL_KEYWORDS: frozenset[str] = frozenset({
     "outage", "down", "critical", "crashed", "breach", "attack", "emergency",

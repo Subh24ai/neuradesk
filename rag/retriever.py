@@ -18,14 +18,17 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 import faiss  # type: ignore[import-untyped]
 
 from agents.state import RetrievedChunk
+from core.config import get_settings
 from rag.loader import Document, load_documents
+
+_cfg = get_settings()
 
 log = structlog.get_logger(__name__)
 
-_EMBED_MODEL: str = "all-MiniLM-L6-v2"
-_CROSS_ENCODER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_EMBED_MODEL: str = _cfg.embed_model
+_CROSS_ENCODER_MODEL: str = _cfg.cross_encoder_model
 # Candidates drawn from each retrieval stage before reranking.
-_STAGE_CANDIDATES: int = 10
+_STAGE_CANDIDATES: int = _cfg.rag_stage_candidates
 
 # ── Persistence paths (evaluated once at import time) ─────────────────────────
 _FAISS_INDEX_PATH: Path = Path(os.environ.get("FAISS_INDEX_PATH", "faiss_index.bin"))

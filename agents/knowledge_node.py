@@ -8,16 +8,19 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from rank_bm25 import BM25Okapi
 
 from agents.state import RetrievedChunk, TicketState
+from core.config import get_settings
 from core.llm import get_llm
 from rag.retriever import get_retriever
 from tracing.langsmith import traceable
+
+_cfg = get_settings()
 
 log = structlog.get_logger(__name__)
 
 # Cross-encoder scores below this threshold indicate the KB has no useful answer.
 # ms-marco-MiniLM-L-6-v2 sigmoid scores: > 0.35 = plausible match; < 0.35 = off-topic.
 # Force confidence low so the escalation router picks it up.
-_RAG_SCORE_THRESHOLD: float = 0.35
+_RAG_SCORE_THRESHOLD: float = _cfg.rag_score_threshold
 
 _RESOLUTION_SYSTEM_PROMPT: str = (
     "You are an IT/HR support assistant. "

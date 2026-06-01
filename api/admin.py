@@ -8,6 +8,10 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
 import structlog
+
+from core.config import get_settings
+
+_cfg = get_settings()
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -615,7 +619,7 @@ async def admin_stream(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "NO_ORG"})
     org_id: str = user.org_id
 
-    q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+    q: asyncio.Queue[str] = asyncio.Queue(maxsize=_cfg.admin_sse_queue_size)
 
     return StreamingResponse(
         _sse_event_stream(org_id, q),
