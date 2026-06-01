@@ -66,7 +66,8 @@ def _api_success(action: str = "test-action") -> dict:
 class TestActionNode:
     """Unit tests for action_node — each test controls the _post_enterprise mock."""
 
-    def test_password_reset_calls_correct_endpoint(self) -> None:
+    @pytest.mark.asyncio
+    async def test_password_reset_calls_correct_endpoint(self) -> None:
         """password_reset intent POSTs to /itsm/reset-password."""
         state = _base_state(intent="password_reset")
 
@@ -74,7 +75,7 @@ class TestActionNode:
             "agents.action_node._post_enterprise",
             return_value=_api_success("reset-password"),
         ) as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         mock_post.assert_called_once()
         endpoint: str = mock_post.call_args[0][0]
@@ -82,7 +83,8 @@ class TestActionNode:
         assert result["status"] == "resolved"
         assert result["action_taken"] == "password_reset_executed"
 
-    def test_access_request_calls_correct_endpoint(self) -> None:
+    @pytest.mark.asyncio
+    async def test_access_request_calls_correct_endpoint(self) -> None:
         """access_request intent POSTs to /itsm/provision-access."""
         state = _base_state(
             intent="access_request",
@@ -93,14 +95,15 @@ class TestActionNode:
             "agents.action_node._post_enterprise",
             return_value=_api_success("provision-access"),
         ) as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         endpoint: str = mock_post.call_args[0][0]
         assert endpoint == "/itsm/provision-access"
         assert result["status"] == "resolved"
         assert result["action_taken"] == "access_request_executed"
 
-    def test_leave_approval_resolves_without_confirmation(self) -> None:
+    @pytest.mark.asyncio
+    async def test_leave_approval_resolves_without_confirmation(self) -> None:
         """leave_approval is non-destructive — resolves with action_confirmed=None."""
         state = _base_state(
             intent="leave_approval",
@@ -112,31 +115,33 @@ class TestActionNode:
             "agents.action_node._post_enterprise",
             return_value=_api_success("approve-leave"),
         ) as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         endpoint: str = mock_post.call_args[0][0]
         assert endpoint == "/hr/approve-leave"
         assert result["status"] == "resolved"
         assert result["action_confirmed"] is True
 
-    def test_unknown_category_escalates_without_api_call(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unknown_category_escalates_without_api_call(self) -> None:
         """unknown intent escalates immediately — _post_enterprise must NOT be called."""
         state = _base_state(intent="unknown", category="unknown")
 
         with patch("agents.action_node._post_enterprise") as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         mock_post.assert_not_called()
         assert result["status"] == "escalated"
         assert result["escalation_reason"] == "category_unknown"
         assert result["escalated"] is True
 
-    def test_destructive_action_blocked_without_confirmation(self) -> None:
+    @pytest.mark.asyncio
+    async def test_destructive_action_blocked_without_confirmation(self) -> None:
         """Destructive intent without confirmation halts for user confirmation — no API call made."""
         state = _base_state(intent="access_revoke", action_confirmed=None)
 
         with patch("agents.action_node._post_enterprise") as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         mock_post.assert_not_called()
         assert result["status"] == "awaiting_confirmation"
@@ -144,19 +149,21 @@ class TestActionNode:
         assert result["error"] is not None
         assert "confirm" in result["error"].lower()
 
-    def test_awaiting_confirmation_status_returned_for_destructive(self) -> None:
+    @pytest.mark.asyncio
+    async def test_awaiting_confirmation_status_returned_for_destructive(self) -> None:
         """Destructive intent sets status='awaiting_confirmation' and populates escalation_reason."""
         state = _base_state(intent="account_lock", action_confirmed=None)
 
         with patch("agents.action_node._post_enterprise") as mock_post:
-            result = action_node(state)
+            result = await action_node(state)
 
         mock_post.assert_not_called()
         assert result["status"] == "awaiting_confirmation"
         assert result["escalation_reason"] is not None
         assert "account_lock" in result["escalation_reason"]
 
-    def test_api_error_sets_escalated(self) -> None:
+    @pytest.mark.asyncio
+    async def test_api_error_sets_escalated(self) -> None:
         """A network error from the enterprise API sets status=escalated."""
         state = _base_state(intent="incident_report", category="incident_report")
 
@@ -164,12 +171,13 @@ class TestActionNode:
             "agents.action_node._post_enterprise",
             side_effect=RuntimeError("connection refused"),
         ):
-            result = action_node(state)
+            result = await action_node(state)
 
         assert result["status"] == "escalated"
         assert "connection refused" in result["error"]
 
-    def test_username_substituted_in_resolution(self) -> None:
+    @pytest.mark.asyncio
+    async def test_username_substituted_in_resolution(self) -> None:
         """{username} in resolution_template is replaced with the extracted entity."""
         state = _base_state(
             intent="password_reset",
@@ -181,7 +189,7 @@ class TestActionNode:
             "agents.action_node._post_enterprise",
             return_value=_api_success(),
         ):
-            result = action_node(state)
+            result = await action_node(state)
 
         assert "jdoe@corp.com" in result["resolution"]
         assert "{username}" not in result["resolution"]

@@ -117,7 +117,7 @@ def build_initial_state(
     }
 
 
-def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text") -> TicketState:
+async def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text") -> TicketState:
     """Submit a ticket through the full graph and return the final state.
 
     Used by smoke tests and any non-streaming callers.
@@ -125,7 +125,7 @@ def run_ticket(raw_text: str, user_id: str = "anonymous", channel: str = "text")
     initial = build_initial_state(raw_text, user_id, channel)
 
     log.info("graph.run_ticket.start", ticket_id=initial["ticket_id"], user_id=user_id)
-    result: TicketState = graph.invoke(initial)
+    result: TicketState = await graph.ainvoke(initial)
 
     # Surface the LangSmith trace URL in the returned state and on stdout.
     trace_url = get_trace_url()

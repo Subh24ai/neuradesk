@@ -1,5 +1,6 @@
 """Tests for LangGraph node logic and conditional routing."""
 
+import pytest
 from datetime import datetime, timezone
 
 from agents.action_node import action_node
@@ -79,62 +80,69 @@ class TestRouting:
 class TestActionNode:
     """Tests for action_node destructive-action guard and resolution rendering."""
 
-    def test_destructive_action_requires_confirmation(self) -> None:
+    @pytest.mark.asyncio
+    async def test_destructive_action_requires_confirmation(self) -> None:
         """Destructive intent without confirmation → status=awaiting_confirmation."""
         state = _base_state(intent="access_revoke", action_confirmed=None)
-        result = action_node(state)
+        result = await action_node(state)
 
         assert result["status"] == "awaiting_confirmation"
         assert result["action_confirmed"] is False
         assert result["error"] is not None
         assert "confirm" in result["error"].lower()
 
-    def test_destructive_action_with_explicit_confirmation_proceeds(self) -> None:
+    @pytest.mark.asyncio
+    async def test_destructive_action_with_explicit_confirmation_proceeds(self) -> None:
         """Destructive intent WITH action_confirmed=True bypasses the guard."""
         state = _base_state(intent="access_revoke", action_confirmed=True)
-        result = action_node(state)
+        result = await action_node(state)
 
         assert result["status"] == "resolved"
         assert result["action_taken"] == "access_revoke_executed"
         assert result["action_confirmed"] is True
 
-    def test_user_id_used_as_username_fallback(self) -> None:
+    @pytest.mark.asyncio
+    async def test_user_id_used_as_username_fallback(self) -> None:
         """Stub 'unknown' in entities → state['user_id'] appears in resolution."""
         state = _base_state(
             user_id="jdoe@corp.com",
             entities={"username": "unknown"},
         )
-        result = action_node(state)
+        result = await action_node(state)
         assert "jdoe@corp.com" in result["resolution"]
 
-    def test_extracted_entity_overrides_user_id_fallback(self) -> None:
+    @pytest.mark.asyncio
+    async def test_extracted_entity_overrides_user_id_fallback(self) -> None:
         """Real NLP-extracted username overrides the user_id fallback."""
         state = _base_state(
             user_id="jdoe@corp.com",
             entities={"username": "john.doe"},
         )
-        result = action_node(state)
+        result = await action_node(state)
         assert "john.doe" in result["resolution"]
         assert "jdoe@corp.com" not in result["resolution"]
 
-    def test_non_destructive_intent_resolves_without_confirmation(self) -> None:
+    @pytest.mark.asyncio
+    async def test_non_destructive_intent_resolves_without_confirmation(self) -> None:
         """Non-destructive intent resolves even with action_confirmed=None."""
         state = _base_state(intent="password_reset", action_confirmed=None)
-        result = action_node(state)
+        result = await action_node(state)
         assert result["status"] == "resolved"
 
 
 class TestFullGraph:
     """End-to-end smoke tests through run_ticket()."""
 
-    def test_full_graph_smoke(self) -> None:
+    @pytest.mark.asyncio
+    async def test_full_graph_smoke(self) -> None:
         """run_ticket returns a valid final status."""
-        result = run_ticket("I forgot my password", "test-user-001", "text")
+        result = await run_ticket("I forgot my password", "test-user-001", "text")
         assert result["status"] in ("resolved", "escalated", "awaiting_confirmation")
 
-    def test_full_graph_populates_all_key_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_full_graph_populates_all_key_fields(self) -> None:
         """All expected output fields are non-None after the graph runs."""
-        result = run_ticket("I forgot my password", "test-user-002", "text")
+        result = await run_ticket("I forgot my password", "test-user-002", "text")
         assert result["ticket_id"] is not None
         assert result["category"] is not None
         assert result["created_at"] is not None
@@ -143,8 +151,9 @@ class TestFullGraph:
         assert result["retrieved_chunks"] is not None
         assert len(result["retrieved_chunks"]) > 0
 
-    def test_full_graph_user_id_in_resolution(self) -> None:
+    @pytest.mark.asyncio
+    async def test_full_graph_user_id_in_resolution(self) -> None:
         """The authenticated user's ID appears in the resolved ticket."""
-        result = run_ticket("I forgot my password", "alice@corp.com", "text")
+        result = await run_ticket("I forgot my password", "alice@corp.com", "text")
         if result["status"] == "resolved":
             assert "alice@corp.com" in result["resolution"]
