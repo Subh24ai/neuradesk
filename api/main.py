@@ -3,7 +3,8 @@
 import asyncio
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
 import structlog
@@ -18,7 +19,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
-from agents.graph import build_initial_state, graph as langgraph_graph
+from agents.graph import build_graph, build_initial_state, get_checkpointer, graph as langgraph_graph
 from storage.gcs import upload_image_b64
 from tracing.langsmith import get_trace_url
 from api.a2a import router as a2a_router
@@ -69,15 +70,71 @@ _STREAM_FIELDS = frozenset(
 # Maximum seconds the LangGraph execution may run before the WebSocket is aborted.
 _GRAPH_EXECUTION_TIMEOUT: int = int(os.getenv("GRAPH_EXECUTION_TIMEOUT_SECONDS", "120"))
 
+# How often the stale-ticket recovery job runs (seconds).
+_STALE_TICKET_POLL_SECONDS: int = int(os.getenv("STALE_TICKET_POLL_SECONDS", "300"))
+
+
+def _recover_stale_tickets() -> None:
+    """Mark tickets stuck in 'pending' beyond GRAPH_EXECUTION_TIMEOUT_SECONDS as failed."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_GRAPH_EXECUTION_TIMEOUT)
+    db = SessionLocal()
+    try:
+        stale = (
+            db.query(TicketModel)
+            .filter(TicketModel.status == "pending", TicketModel.created_at < cutoff)
+            .all()
+        )
+        for ticket in stale:
+            ticket.status = "failed"
+            ticket.escalation_reason = "Recovered: graph execution did not complete"
+            log.warning("stale_ticket_recovery.recovered", ticket_id=ticket.id)
+        if stale:
+            db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("stale_ticket_recovery.db_error")
+    finally:
+        db.close()
+
+
+async def _stale_ticket_recovery_loop() -> None:
+    """Run _recover_stale_tickets every _STALE_TICKET_POLL_SECONDS indefinitely."""
+    while True:
+        await asyncio.sleep(_STALE_TICKET_POLL_SECONDS)
+        try:
+            _recover_stale_tickets()
+        except Exception:
+            log.exception("stale_ticket_recovery.loop_error")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Create all DB tables and configure DSPy on startup; log shutdown."""
+    """Startup: create DB tables, configure DSPy, init checkpointer, start recovery loop.
+    Shutdown: cancel recovery loop, release checkpointer connection.
+    """
+    global langgraph_graph
     Base.metadata.create_all(bind=engine)
     configure_dspy()
-    log.info("app.startup", db_url=str(engine.url))
-    yield
-    log.info("app.shutdown")
+
+    checkpointer_cm = get_checkpointer()
+    async with (checkpointer_cm if checkpointer_cm is not None else nullcontext()) as checkpointer:
+        if checkpointer is not None:
+            await checkpointer.setup()
+            langgraph_graph = build_graph(checkpointer)
+            log.info("app.startup", db_url=str(engine.url), checkpointer="postgres")
+        else:
+            log.info("app.startup", db_url=str(engine.url), checkpointer="none")
+
+        recovery_task = asyncio.create_task(_stale_ticket_recovery_loop())
+        try:
+            yield
+        finally:
+            log.info("app.shutdown")
+            recovery_task.cancel()
+            try:
+                await recovery_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
@@ -532,7 +589,11 @@ async def websocket_ticket(
         final_state: dict = {}
 
         async def _stream() -> None:
-            async for chunk in langgraph_graph.astream(initial_state, stream_mode="updates"):
+            async for chunk in langgraph_graph.astream(
+                initial_state,
+                config={"configurable": {"thread_id": ticket_id}},
+                stream_mode="updates",
+            ):
                 for node_name, node_output in chunk.items():
                     log.debug("ws.node_complete", ticket_id=ticket_id, node=node_name)
                     try:

@@ -9,8 +9,9 @@ The conditional edge after action_node routes to escalation_node when:
   - category == "UNKNOWN"
 """
 
+import os
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 from langgraph.graph import END, StateGraph
@@ -38,7 +39,37 @@ def _should_escalate(state: TicketState) -> Literal["escalation_node", "__end__"
     return "__end__"
 
 
-def build_graph() -> StateGraph:
+def get_checkpointer() -> Any | None:
+    """Return an AsyncPostgresSaver context manager for DATABASE_URL, or None.
+
+    Requires: pip install langgraph-checkpoint-postgres psycopg[binary]
+    Returns None when the package is absent or DATABASE_URL targets SQLite.
+    Caller must use the return value as an async context manager and call
+    await checkpointer.setup() before compiling the graph with it.
+    """
+    db_url = os.environ.get("DATABASE_URL", "")
+    # Strip SQLAlchemy driver suffixes so psycopg3 accepts the connection string.
+    db_url = db_url.replace("postgresql+psycopg2://", "postgresql://").replace(
+        "postgresql+psycopg://", "postgresql://"
+    )
+    if not db_url or db_url.startswith("sqlite"):
+        return None
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore[import-untyped]
+
+        return AsyncPostgresSaver.from_conn_string(db_url)
+    except ImportError:
+        log.warning(
+            "graph.checkpointer_unavailable",
+            hint="pip install langgraph-checkpoint-postgres psycopg[binary] for crash recovery",
+        )
+        return None
+    except Exception as exc:
+        log.warning("graph.checkpointer_init_failed", error=str(exc))
+        return None
+
+
+def build_graph(checkpointer: Any | None = None) -> StateGraph:
     """Construct and compile the NeuraDesk LangGraph workflow."""
     builder: StateGraph = StateGraph(TicketState)
 
@@ -60,7 +91,7 @@ def build_graph() -> StateGraph:
     )
     builder.add_edge("escalation_node", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 # Module-level compiled graph — import this in FastAPI and tests.
