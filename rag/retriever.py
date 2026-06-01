@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import time
 import threading
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -23,6 +27,13 @@ _CROSS_ENCODER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Candidates drawn from each retrieval stage before reranking.
 _STAGE_CANDIDATES: int = 10
 
+# ── Persistence paths (evaluated once at import time) ─────────────────────────
+_FAISS_INDEX_PATH: Path = Path(os.environ.get("FAISS_INDEX_PATH", "faiss_index.bin"))
+_FAISS_DOCS_PATH: Path = _FAISS_INDEX_PATH.with_suffix(".docs.json")
+_FAISS_RELOAD_SENTINEL_PATH: Path = Path(
+    os.environ.get("FAISS_RELOAD_SENTINEL", "faiss_reload.sentinel")
+)
+
 
 class HybridRetriever:
     """FAISS dense + BM25 sparse retriever with cross-encoder reranking.
@@ -36,8 +47,13 @@ class HybridRetriever:
     def __init__(self, documents: list[Document]) -> None:
         """Build all three indices from the provided document list.
 
+        If a persisted FAISS index exists at _FAISS_INDEX_PATH and its
+        embedding dimension matches the current model, the index and companion
+        document list are loaded from disk instead of re-encoding the full corpus.
+        Falls back to a full scratch build on any mismatch or error.
+
         Args:
-            documents: Flat list of Document dicts (source + content).
+            documents: Flat list of Document dicts used when building from scratch.
 
         Raises:
             ValueError: If documents is empty.
@@ -45,29 +61,63 @@ class HybridRetriever:
         if not documents:
             raise ValueError("Cannot build a retriever from an empty document list.")
 
-        self._documents: list[Document] = documents
-        self._texts: list[str] = [d["content"] for d in documents]
         self._lock: threading.Lock = threading.Lock()
 
-        log.info("retriever.build_start", num_docs=len(documents))
-
-        # ── Dense index (FAISS) ──────────────────────────────────────────────
+        # Embedder and cross-encoder are always loaded — needed at query time.
         self._embedder: SentenceTransformer = SentenceTransformer(_EMBED_MODEL)
+        self._cross_encoder: CrossEncoder = CrossEncoder(_CROSS_ENCODER_MODEL)
+
+        # ── Try loading persisted FAISS index from disk ──────────────────────
+        if _FAISS_INDEX_PATH.exists() and _FAISS_DOCS_PATH.exists():
+            try:
+                loaded_index = faiss.read_index(str(_FAISS_INDEX_PATH))
+                with _FAISS_DOCS_PATH.open() as fh:
+                    persisted: list[Document] = json.load(fh)
+                # Validate dimension by probing the embedder with one document.
+                probe: np.ndarray = self._embedder.encode(
+                    [documents[0]["content"]], show_progress_bar=False, convert_to_numpy=True
+                ).astype(np.float32)
+                if loaded_index.d == probe.shape[1]:
+                    self._documents = persisted
+                    self._texts = [d["content"] for d in persisted]
+                    self._faiss_index = loaded_index
+                    self._bm25 = BM25Okapi([t.lower().split() for t in self._texts])
+                    log.info(
+                        "retriever.loaded_from_disk",
+                        num_docs=len(self._documents),
+                        path=str(_FAISS_INDEX_PATH),
+                    )
+                    return
+                log.warning(
+                    "retriever.faiss_dim_mismatch",
+                    loaded_dim=loaded_index.d,
+                    expected_dim=probe.shape[1],
+                    hint="Persisted index was built with a different model — rebuilding from scratch",
+                )
+            except Exception as exc:
+                log.warning(
+                    "retriever.faiss_load_failed",
+                    error=str(exc),
+                    hint="Rebuilding from scratch",
+                )
+
+        # ── Build from scratch ───────────────────────────────────────────────
+        self._documents = list(documents)
+        self._texts = [d["content"] for d in self._documents]
+
+        log.info("retriever.build_start", num_docs=len(self._documents))
+
         embeddings: np.ndarray = self._embedder.encode(
             self._texts, show_progress_bar=False, convert_to_numpy=True
         ).astype(np.float32)
         faiss.normalize_L2(embeddings)  # cosine similarity via inner product
-        self._faiss_index: faiss.IndexFlatIP = faiss.IndexFlatIP(embeddings.shape[1])
+        self._faiss_index = faiss.IndexFlatIP(embeddings.shape[1])
         self._faiss_index.add(embeddings)
 
-        # ── Sparse index (BM25) ──────────────────────────────────────────────
         tokenized: list[list[str]] = [t.lower().split() for t in self._texts]
-        self._bm25: BM25Okapi = BM25Okapi(tokenized)
+        self._bm25 = BM25Okapi(tokenized)
 
-        # ── Cross-encoder reranker ───────────────────────────────────────────
-        self._cross_encoder: CrossEncoder = CrossEncoder(_CROSS_ENCODER_MODEL)
-
-        log.info("retriever.build_done", num_docs=len(documents))
+        log.info("retriever.build_done", num_docs=len(self._documents))
 
     def search(self, query: str, top_k: int = 3) -> list[RetrievedChunk]:
         """Run hybrid retrieval and return the top_k best chunks.
@@ -157,11 +207,62 @@ class HybridRetriever:
             # BM25 IDF depends on corpus size — rebuild from the full corpus.
             self._bm25 = BM25Okapi([t.lower().split() for t in self._texts])
 
+            # Persist updated index inside the lock so the FAISS binary and docs
+            # file are always written in the same locked section, keeping them in sync.
+            try:
+                faiss.write_index(self._faiss_index, str(_FAISS_INDEX_PATH))
+                with _FAISS_DOCS_PATH.open("w") as fh:
+                    json.dump(self._documents, fh)
+                _FAISS_RELOAD_SENTINEL_PATH.write_text(str(time.time()))
+            except Exception as exc:
+                log.warning("retriever.persist_failed", error=str(exc))
+
         log.info(
             "retriever.add_documents",
             num_added=len(documents),
             total=len(self._documents),
         )
+
+    def reload(self) -> None:
+        """Reload FAISS index and documents from disk, replacing the live state.
+
+        Validates the persisted index dimension before swapping.  No-op when
+        the persisted files are absent, empty, or fail to load.  File I/O and
+        the dimension probe happen outside the lock; only the final state swap
+        is locked so search() is not blocked for longer than necessary.
+        """
+        if not _FAISS_INDEX_PATH.exists() or not _FAISS_DOCS_PATH.exists():
+            log.warning("retriever.reload_skipped", reason="persisted files not found")
+            return
+        try:
+            loaded_index = faiss.read_index(str(_FAISS_INDEX_PATH))
+            with _FAISS_DOCS_PATH.open() as fh:
+                persisted: list[Document] = json.load(fh)
+            if not persisted:
+                log.warning("retriever.reload_skipped", reason="persisted docs list is empty")
+                return
+            probe: np.ndarray = self._embedder.encode(
+                [persisted[0]["content"]], show_progress_bar=False, convert_to_numpy=True
+            ).astype(np.float32)
+            if loaded_index.d != probe.shape[1]:
+                log.warning(
+                    "retriever.reload_dim_mismatch",
+                    loaded_dim=loaded_index.d,
+                    expected_dim=probe.shape[1],
+                )
+                return
+            with self._lock:
+                self._faiss_index = loaded_index
+                self._documents = persisted
+                self._texts = [d["content"] for d in persisted]
+                self._bm25 = BM25Okapi([t.lower().split() for t in self._texts])
+            log.info(
+                "retriever.reloaded",
+                num_docs=len(self._documents),
+                path=str(_FAISS_INDEX_PATH),
+            )
+        except Exception as exc:
+            log.warning("retriever.reload_failed", error=str(exc))
 
     @classmethod
     def get(cls) -> "HybridRetriever":

@@ -73,6 +73,9 @@ _GRAPH_EXECUTION_TIMEOUT: int = int(os.getenv("GRAPH_EXECUTION_TIMEOUT_SECONDS",
 # How often the stale-ticket recovery job runs (seconds).
 _STALE_TICKET_POLL_SECONDS: int = int(os.getenv("STALE_TICKET_POLL_SECONDS", "300"))
 
+# How often each worker polls the FAISS sentinel file for cross-worker index updates.
+_FAISS_RELOAD_POLL_SECONDS: int = int(os.getenv("FAISS_RELOAD_POLL_SECONDS", "30"))
+
 
 def _recover_stale_tickets() -> None:
     """Mark tickets stuck in 'pending' beyond GRAPH_EXECUTION_TIMEOUT_SECONDS as failed."""
@@ -107,6 +110,31 @@ async def _stale_ticket_recovery_loop() -> None:
             log.exception("stale_ticket_recovery.loop_error")
 
 
+async def _faiss_reload_loop() -> None:
+    """Per-worker sentinel poller: reload the in-process FAISS retriever when
+    another worker has persisted an updated index after a KB upload.
+
+    Each worker maintains its own last_ts so a freshly-started worker whose
+    __init__ already loaded from disk does not immediately trigger a redundant
+    reload on the first poll.
+    """
+    from pathlib import Path
+    sentinel_path = Path(os.environ.get("FAISS_RELOAD_SENTINEL", "faiss_reload.sentinel"))
+    last_ts: float = 0.0
+    while True:
+        await asyncio.sleep(_FAISS_RELOAD_POLL_SECONDS)
+        try:
+            if sentinel_path.exists():
+                ts = float(sentinel_path.read_text().strip())
+                if ts > last_ts:
+                    from rag.retriever import get_retriever
+                    get_retriever().reload()
+                    last_ts = ts
+                    log.info("faiss_reload.triggered", sentinel_ts=ts)
+        except Exception:
+            log.exception("faiss_reload.loop_error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup: create DB tables, configure DSPy, init checkpointer, start recovery loop.
@@ -126,15 +154,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             log.info("app.startup", db_url=str(engine.url), checkpointer="none")
 
         recovery_task = asyncio.create_task(_stale_ticket_recovery_loop())
+        faiss_reload_task = asyncio.create_task(_faiss_reload_loop())
         try:
             yield
         finally:
             log.info("app.shutdown")
-            recovery_task.cancel()
-            try:
-                await recovery_task
-            except asyncio.CancelledError:
-                pass
+            for task in (recovery_task, faiss_reload_task):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
 app = FastAPI(
