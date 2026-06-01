@@ -565,31 +565,25 @@ class TestAdminKB:
     """POST /admin/kb — knowledge base doc creation with live retriever update."""
 
     def test_create_kb_doc_updates_retriever(self, auth_client) -> None:
-        """Creating a KB doc via POST /admin/kb calls add_documents on the live retriever."""
-        from unittest.mock import MagicMock
-        mock_retriever = MagicMock()
-        with patch("api.admin.get_retriever", return_value=mock_retriever):
-            r = auth_client.post(
-                "/admin/kb",
-                json={"title": "VPN Troubleshooting", "content": "If VPN fails, restart the client and re-authenticate using your SSO credentials."},
-            )
+        """Creating a KB doc via POST /admin/kb persists it to DB and returns the created doc."""
+        r = auth_client.post(
+            "/admin/kb",
+            json={"title": "VPN Troubleshooting", "content": "If VPN fails, restart the client and re-authenticate using your SSO credentials."},
+        )
         assert r.status_code == 201
         body = r.json()
         assert body["title"] == "VPN Troubleshooting"
-
-        mock_retriever.add_documents.assert_called_once()
-        added = mock_retriever.add_documents.call_args[0][0]
-        assert len(added) == 1
-        assert "VPN" in added[0]["content"]
+        assert "VPN" in body["content"]
 
     def test_create_kb_doc_succeeds_even_if_retriever_raises(self, auth_client) -> None:
-        """Retriever update failure does not prevent the KB doc from being saved."""
-        with patch("api.admin.get_retriever", side_effect=RuntimeError("index unavailable")):
-            r = auth_client.post(
-                "/admin/kb",
-                json={"title": "Fallback Test", "content": "Content that is at least ten characters long."},
-            )
+        """POST /admin/kb returns 201 and persists the doc — org docs no longer touch the retriever."""
+        r = auth_client.post(
+            "/admin/kb",
+            json={"title": "Fallback Test", "content": "Content that is at least ten characters long."},
+        )
         assert r.status_code == 201
+        body = r.json()
+        assert body["title"] == "Fallback Test"
 
 
 class TestConfirmCancel:
