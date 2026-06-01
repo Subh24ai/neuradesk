@@ -78,7 +78,12 @@ def knowledge_node(state: TicketState) -> TicketState:
 
     # No results → low confidence so the graph router escalates.
     if not chunks:
-        log.warning("knowledge_node.empty_retrieval", query_preview=query[:80])
+        log.warning(
+            "knowledge_node.empty_retrieval",
+            ticket_id=state.get("ticket_id"),
+            query_preview=query[:80],
+            threshold=_RAG_SCORE_THRESHOLD,
+        )
         return {
             **state,
             "retrieved_chunks": [],
@@ -109,7 +114,13 @@ def knowledge_node(state: TicketState) -> TicketState:
         ])
         resolution: str = str(response.content).strip()
     except Exception as exc:
-        log.exception("knowledge_node.llm_error", error=str(exc))
+        log.exception(
+            "knowledge_node.llm_error",
+            ticket_id=state.get("ticket_id"),
+            exc_type=type(exc).__name__,
+            error=str(exc),
+            hint="LLM call failed — resolution degraded to raw KB chunk, not a retrieval failure",
+        )
         resolution = top_chunk["content"][:200]
 
     # Guarantee {username} in resolution_template so the action node can
