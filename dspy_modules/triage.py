@@ -107,13 +107,18 @@ def _safe_confidence(raw: Any) -> float:
     except (ValueError, TypeError):
         return 0.5
 
+_classifier: TriageClassifier | None = None
+
 
 def _get_classifier() -> TriageClassifier:
     """Return a TriageClassifier, loading compiled weights when available.
 
     Falls back to an uncompiled classifier if the compiled file is missing or
-    fails to load — never raises.
+    fails to load — never raises. Singleton: built once per process.
     """
+    global _classifier
+    if _classifier is not None:
+        return _classifier
     classifier = TriageClassifier()
     if _COMPILED_PATH.exists():
         try:
@@ -121,7 +126,8 @@ def _get_classifier() -> TriageClassifier:
             log.info("triage.loaded_compiled", path=str(_COMPILED_PATH))
         except Exception as exc:
             log.warning("triage.load_failed_fallback_to_uncompiled", error=str(exc))
-    return classifier
+    _classifier = classifier
+    return _classifier
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
