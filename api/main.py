@@ -558,7 +558,11 @@ async def websocket_ticket(
 
         # Always persist to DB regardless of whether the client is still connected.
         trace_url: Optional[str] = get_trace_url() or final_state.get("trace_url")
-        ticket.status = final_state.get("status", "resolved")
+        if not final_state:
+            ticket.status = "failed"
+            ticket.escalation_reason = "Graph execution failed before any node completed"
+        else:
+            ticket.status = final_state.get("status", "failed")
         ticket.category = final_state.get("category")
         ticket.intent = final_state.get("intent")
         ticket.confidence = final_state.get("confidence")

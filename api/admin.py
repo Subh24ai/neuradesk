@@ -148,6 +148,8 @@ def org_stats(
         "resolved": _count("resolved"),
         "escalated": _count("escalated"),
         "pending": _count("pending"),
+        "failed": _count("failed"),
+        "awaiting_confirmation": _count("awaiting_confirmation"),
     }
 
 
