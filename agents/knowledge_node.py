@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import numpy as np
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
-from rank_bm25 import BM25Okapi
 
 from agents.state import RetrievedChunk, TicketState
 from core.config import get_settings
@@ -53,31 +51,11 @@ def knowledge_node(state: TicketState) -> TicketState:
 
     log.info("knowledge_node.start", ticket_id=state.get("ticket_id"), category=category)
 
-    retriever = get_retriever()
-    chunks: list[RetrievedChunk] = retriever.search(query, top_k=3)
-
-    # Merge in org-specific KB docs via BM25 if the org has uploaded any.
     org_kb_docs: list[dict] = state.get("org_kb_docs") or []
-    if org_kb_docs:
-        org_texts = [d["content"] for d in org_kb_docs]
-        bm25 = BM25Okapi([t.lower().split() for t in org_texts])
-        org_scores = bm25.get_scores(query.lower().split())
-        top_org_idxs = list(np.argsort(org_scores)[::-1][:3])
-        org_chunks: list[RetrievedChunk] = [
-            {
-                "source": f"org-kb:{org_kb_docs[i]['title']}",
-                "content": org_texts[i],
-                "score": float(org_scores[i]) + 5.0,  # boost so org docs rank above global
-            }
-            for i in top_org_idxs
-            if org_scores[i] > 0
-        ]
-        # Merge: org docs first, then global (deduplicate by content prefix)
-        seen_prefixes: set[str] = {c["content"][:80] for c in org_chunks}
-        for c in chunks:
-            if c["content"][:80] not in seen_prefixes:
-                org_chunks.append(c)
-        chunks = sorted(org_chunks, key=lambda c: c["score"], reverse=True)[:3]
+    retriever = get_retriever()
+    chunks: list[RetrievedChunk] = retriever.search(
+        query, top_k=3, org_chunks=org_kb_docs or None
+    )
 
     # No results → low confidence so the graph router escalates.
     if not chunks:

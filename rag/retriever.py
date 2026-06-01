@@ -122,12 +122,22 @@ class HybridRetriever:
 
         log.info("retriever.build_done", num_docs=len(self._documents))
 
-    def search(self, query: str, top_k: int = 3) -> list[RetrievedChunk]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+        org_chunks: list[dict] | None = None,
+    ) -> list[RetrievedChunk]:
         """Run hybrid retrieval and return the top_k best chunks.
 
         Args:
             query: Free-text search query from the ticket or agent.
             top_k: Maximum number of chunks to return after reranking.
+            org_chunks: Optional org-specific KB docs (list of dicts with
+                ``title`` and ``content`` keys).  When provided, these are
+                merged into the candidate pool *before* cross-encoder
+                reranking so they receive identical scoring treatment to
+                global docs.  No score boost is applied.
 
         Returns:
             List of RetrievedChunk dicts sorted by cross-encoder score descending.
@@ -158,25 +168,33 @@ class HybridRetriever:
                 seen.add(h)
                 candidate_idxs.append(idx)
 
-        # ── 4. Cross-encoder reranking ───────────────────────────────────────
-        pairs: list[tuple[str, str]] = [(query, self._texts[i]) for i in candidate_idxs]
+        # ── 4. Build unified candidate pool, merging org docs before reranking ──
+        candidates: list[tuple[str, str]] = [
+            (self._documents[idx]["source"], self._texts[idx])
+            for idx in candidate_idxs
+        ]
+        if org_chunks:
+            seen_content: set[str] = {content for _, content in candidates}
+            for oc in org_chunks:
+                if oc["content"] not in seen_content:
+                    candidates.append((f"org-kb:{oc['title']}", oc["content"]))
+                    seen_content.add(oc["content"])
+
+        # ── 5. Cross-encoder reranking over the full candidate pool ──────────
+        pairs: list[tuple[str, str]] = [(query, content) for _, content in candidates]
         ce_scores: list[float] = self._cross_encoder.predict(pairs).tolist()
 
-        ranked = sorted(zip(candidate_idxs, ce_scores), key=lambda x: x[1], reverse=True)
+        ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
 
         results: list[RetrievedChunk] = [
-            {
-                "source": self._documents[idx]["source"],
-                "content": self._texts[idx],
-                "score": float(score),
-            }
-            for idx, score in ranked[:top_k]
+            {"source": source, "content": content, "score": float(score)}
+            for (source, content), score in ranked[:top_k]
         ]
 
         log.info(
             "retriever.retrieve_done",
             query_preview=query[:80],
-            num_candidates=len(candidate_idxs),
+            num_candidates=len(candidates),
             top_k=top_k,
         )
         return results
