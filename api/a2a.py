@@ -252,7 +252,7 @@ async def task_send(
 # ── SSE streaming task endpoint ────────────────────────────────────────────────
 
 
-@router.post("/tasks/sendSubscribe", summary="A2A SSE streaming task")
+@router.post("/tasks/sendSubscribe", summary="A2A SSE streaming task", response_model=None)
 async def task_send_subscribe(
     request: Request,
     _: None = Depends(get_a2a_key),
