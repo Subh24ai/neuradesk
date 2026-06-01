@@ -66,6 +66,9 @@ _STREAM_FIELDS = frozenset(
     ("category", "confidence", "resolution", "status", "escalation_reason")
 )
 
+# Maximum seconds the LangGraph execution may run before the WebSocket is aborted.
+_GRAPH_EXECUTION_TIMEOUT: int = int(os.getenv("GRAPH_EXECUTION_TIMEOUT_SECONDS", "120"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -528,7 +531,7 @@ async def websocket_ticket(
         )
         final_state: dict = {}
 
-        try:
+        async def _stream() -> None:
             async for chunk in langgraph_graph.astream(initial_state, stream_mode="updates"):
                 for node_name, node_output in chunk.items():
                     log.debug("ws.node_complete", ticket_id=ticket_id, node=node_name)
@@ -545,6 +548,19 @@ async def websocket_ticket(
                     except Exception:
                         pass
                     final_state.update(node_output)
+
+        try:
+            await asyncio.wait_for(_stream(), timeout=_GRAPH_EXECUTION_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.error("ws.astream_timeout", ticket_id=ticket_id, timeout=_GRAPH_EXECUTION_TIMEOUT)
+            ticket.status = "failed"
+            ticket.escalation_reason = "Graph execution timed out"
+            db.commit()
+            try:
+                await websocket.send_json({"error": "An internal error occurred.", "code": "WS_TIMEOUT"})
+            except Exception:
+                pass
+            return
         except asyncio.CancelledError:
             log.info("ws.astream_cancelled", ticket_id=ticket_id)
             # Do NOT re-raise — DB commit must still run below.
