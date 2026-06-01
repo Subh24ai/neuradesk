@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
 import structlog
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agents.knowledge_node import knowledge_node
 from agents.state import TicketState
@@ -28,6 +30,27 @@ from agents.state import TicketState
 log = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["a2a"])
+
+# ── A2A authentication ─────────────────────────────────────────────────────────
+
+_A2A_API_KEY: str = os.environ.get("A2A_API_KEY", "")
+if not _A2A_API_KEY:
+    raise RuntimeError(
+        "A2A_API_KEY env var is not set — refusing to start with A2A task endpoints unauthenticated"
+    )
+
+_a2a_bearer = HTTPBearer(auto_error=True)
+
+
+def get_a2a_key(
+    credentials: HTTPAuthorizationCredentials = Depends(_a2a_bearer),
+) -> None:
+    """Validate the A2A Bearer token; raise 401 on any mismatch."""
+    if credentials.credentials != _A2A_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+        )
 
 # ── Agent Card ─────────────────────────────────────────────────────────────────
 
@@ -45,7 +68,7 @@ _AGENT_CARD: dict[str, Any] = {
         "pushNotifications": False,
         "stateTransitionHistory": False,
     },
-    "authentication": {"schemes": ["none"]},
+    "authentication": {"schemes": ["bearer"]},
     "defaultInputModes": ["text/plain"],
     "defaultOutputModes": ["text/plain"],
     "skills": [
@@ -145,7 +168,10 @@ async def agent_card(request: Request) -> dict[str, Any]:
 
 
 @router.post("/tasks/send", summary="A2A synchronous task")
-async def task_send(request: Request) -> dict[str, Any]:
+async def task_send(
+    request: Request,
+    _: None = Depends(get_a2a_key),
+) -> dict[str, Any]:
     """Submit a knowledge-retrieval task and wait for synchronous completion.
 
     Request body (A2A Task)::
@@ -221,7 +247,10 @@ async def task_send(request: Request) -> dict[str, Any]:
 
 
 @router.post("/tasks/sendSubscribe", summary="A2A SSE streaming task")
-async def task_send_subscribe(request: Request) -> StreamingResponse:
+async def task_send_subscribe(
+    request: Request,
+    _: None = Depends(get_a2a_key),
+) -> StreamingResponse:
     """Submit a task and receive real-time status updates via Server-Sent Events.
 
     SSE event sequence::
