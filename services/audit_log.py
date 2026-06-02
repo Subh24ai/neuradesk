@@ -72,16 +72,33 @@ def _init_handler() -> logging.handlers.RotatingFileHandler:
     return handler
 
 
+_handler: logging.handlers.RotatingFileHandler | None = None
+
 _audit_logger: logging.Logger = logging.getLogger("neuradesk.audit")
 _audit_logger.setLevel(logging.INFO)
-_audit_logger.addHandler(_init_handler())
 _audit_logger.propagate = False  # do not forward to the root logger or structlog
 
 
 # ── Write helpers ─────────────────────────────────────────────────────────────
 
+def _get_handler() -> logging.handlers.RotatingFileHandler:
+    """Return the cached handler, initialising it on first call.
+
+    Reads the current value of _AUDIT_FILE at init time so that tests can
+    monkeypatch _AUDIT_FILE and reset _handler = None to force reinitialisation
+    against the patched path.
+    """
+    global _handler
+    if _handler is None:
+        _audit_logger.handlers.clear()  # drop any stale handler from a prior init
+        _handler = _init_handler()
+        _audit_logger.addHandler(_handler)
+    return _handler
+
+
 def _write_line_sync(entry: dict[str, Any]) -> None:
     """Write one JSON line via the rotating audit logger (thread-safe)."""
+    _get_handler()  # ensure handler points to the current _AUDIT_FILE
     _audit_logger.info(json.dumps(entry, default=str))
 
 

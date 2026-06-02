@@ -127,6 +127,7 @@ class TestAuditLog:
         """
         audit_file = tmp_path / "test_audit.jsonl"
         monkeypatch.setattr(audit_mod, "_AUDIT_FILE", audit_file)
+        monkeypatch.setattr(audit_mod, "_handler", None)
 
         r = enterprise_client.post(
             "/itsm/reset-password",

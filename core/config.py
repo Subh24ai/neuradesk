@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     email_smtp_timeout: int = 15
     slack_webhook_timeout: float = 5.0
     a2a_query_timeout: int = 30
+    a2a_max_concurrent_subscriptions: int = 10
     graph_execution_timeout: int = 120
 
     # ── Retry ─────────────────────────────────────────────────────────────

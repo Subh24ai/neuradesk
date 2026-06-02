@@ -80,7 +80,7 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip && pip install -e ".[dev]"
 
 cp .env.example .env
-# Fill in: ANTHROPIC_API_KEY, ENTERPRISE_API_SECRET, API_SECRET_KEY
+# Fill in: GROQ_API_KEY, ENTERPRISE_API_SECRET, API_SECRET_KEY, A2A_API_KEY
 ```
 
 **Full stack with Docker (recommended):**
@@ -116,29 +116,13 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 169 tests
+pytest tests/ -v          # 183 tests
 ```
 
 **Run the load test:**
 ```bash
 # Start both servers, then:
 python3 tests/load_test.py
-```
-
-
-***Option 1 — Docker (recommended, one command):***
-```
-  docker-compose up --build
-  # Backend → localhost:8000 | Mock enterprise API → localhost:8001
-  
-```
-***Option 2 — Local dev (two terminals):***
-```
-  Terminal 1 — Backend:
-  uvicorn api.main:app --reload --port 8000
-
-  Terminal 2 — Frontend:
-  cd frontend && npm install && npm run dev
 ```
 
 ## Project Structure

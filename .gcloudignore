@@ -19,3 +19,6 @@ rag/faiss_index/
 rag/*.index
 rag/*.pkl
 neuradesk.db
+# Local PII/data backups — never upload to build context
+registration_wipe_backup_*.json
+faiss_reload.sentinel
