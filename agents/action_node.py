@@ -29,6 +29,9 @@ _ENDPOINT_MAP: dict[str, str] = {
     "leave_approval": "/hr/approve-leave",
     "incident_report": "/itsm/create-incident",
     "software_install": "/itsm/notify-manager",
+    "access_revoke": "/iam/revoke-access",
+    "account_lock": "/iam/lock-account",
+    "account_delete": "/iam/delete-account",
 }
 
 _PRIORITY_TO_SEVERITY: dict[str, str] = {
@@ -122,6 +125,29 @@ def _build_payload(
             "user_id": user_id,
             "description": raw or "No description provided",
             "severity": severity,
+        }
+
+    if intent == "access_revoke":
+        return {
+            "user_id": user_id,
+            "resource": entities.get("software", "all-systems"),
+            "reason": raw or "Access revocation requested",
+        }
+
+    if intent == "account_lock":
+        return {
+            "user_id": user_id,
+            "reason": raw or "Account lock requested",
+        }
+
+    if intent == "account_delete":
+        # confirm=True is safe here: _build_payload is only reached after the
+        # destructive gate is satisfied (action_confirmed=True), so the explicit
+        # body-level confirmation the IAM endpoint requires is justified.
+        return {
+            "user_id": user_id,
+            "confirm": True,
+            "reason": raw or "Account deletion requested",
         }
 
     # software_install → /itsm/notify-manager

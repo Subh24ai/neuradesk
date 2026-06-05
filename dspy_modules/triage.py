@@ -36,6 +36,9 @@ VALID_CATEGORIES: frozenset[str] = frozenset({
     "software_install",
     "leave_approval",
     "incident_report",
+    "access_revoke",
+    "account_lock",
+    "account_delete",
     "unknown",
 })
 
@@ -46,8 +49,23 @@ VALID_CATEGORIES: frozenset[str] = frozenset({
 class TriageSignature(dspy.Signature):
     """Classify an enterprise IT/HR support ticket into the correct service category.
 
-    Categories: password_reset | access_request | software_install |
-                leave_approval | incident_report | unknown
+    Categories:
+      password_reset    — user forgot their password or was locked out by failed
+                          login attempts and needs it reset.
+      access_request    — grant NEW access or permissions to a resource.
+      software_install  — install or deploy software on a device.
+      leave_approval    — request to take leave / PTO / time off.
+      incident_report   — an outage, breach, or service degradation.
+      access_revoke     — REMOVE existing access or permissions from a user
+                          (offboarding, role change). Destructive.
+      account_lock      — disable, lock, suspend, or freeze a user's account or
+                          login (security or offboarding). Destructive.
+      account_delete    — permanently delete or remove a user account. Destructive.
+      unknown           — does not fit any category above.
+
+    Disambiguation: access_request GRANTS access while access_revoke REMOVES it;
+    password_reset restores a user's own login while account_lock deliberately
+    disables someone's account.
     """
 
     ticket_text: str = dspy.InputField(
@@ -56,7 +74,8 @@ class TriageSignature(dspy.Signature):
     category: str = dspy.OutputField(
         desc=(
             "Ticket category — one of: password_reset, access_request, "
-            "software_install, leave_approval, incident_report, unknown."
+            "software_install, leave_approval, incident_report, access_revoke, "
+            "account_lock, account_delete, unknown."
         )
     )
     confidence: float = dspy.OutputField(
@@ -189,10 +208,35 @@ def triage_metric(
 # ── Compilation ───────────────────────────────────────────────────────────────
 
 
+# Examples held out per category for validation; the remainder are used to train.
+_VAL_PER_CATEGORY: int = 3
+
+
+def _stratified_split(
+    examples: list[dspy.Example],
+) -> tuple[list[dspy.Example], list[dspy.Example]]:
+    """Split examples into (train, val), holding out _VAL_PER_CATEGORY per category.
+
+    Stratifying keeps every category represented in both splits so the compiled
+    demos and the before/after benchmark cover all 9 categories — including the
+    destructive ones appended to the end of TRAINING_EXAMPLES. The previous
+    fixed examples[:45]/[45:] slice silently excluded the new categories.
+    """
+    by_cat: dict[str, list[dspy.Example]] = {}
+    for ex in examples:
+        by_cat.setdefault(str(ex.category), []).append(ex)
+    train: list[dspy.Example] = []
+    val: list[dspy.Example] = []
+    for cat_examples in by_cat.values():
+        val.extend(cat_examples[:_VAL_PER_CATEGORY])
+        train.extend(cat_examples[_VAL_PER_CATEGORY:])
+    return train, val
+
+
 def compile_classifier(lm: Any) -> TriageClassifier:
     """Compile TriageClassifier with BootstrapFewShot on the training data.
 
-    Splits TRAINING_EXAMPLES 45 / 15 (train / validation), runs
+    Uses a stratified train split (every category represented), runs
     BootstrapFewShot, and saves the compiled program to triage_compiled.json.
 
     Args:
@@ -208,7 +252,7 @@ def compile_classifier(lm: Any) -> TriageClassifier:
     examples = [
         dspy.Example(**ex).with_inputs("ticket_text") for ex in TRAINING_EXAMPLES
     ]
-    trainset = examples[:45]
+    trainset, _ = _stratified_split(examples)
 
     teleprompter = BootstrapFewShot(metric=triage_metric, max_bootstrapped_demos=4)
     compiled: TriageClassifier = teleprompter.compile(
@@ -242,14 +286,14 @@ if __name__ == "__main__":
     examples = [
         dspy.Example(**ex).with_inputs("ticket_text") for ex in TRAINING_EXAMPLES
     ]
-    valset = examples[45:]  # last 15 examples, one per category × some overlap
+    _, valset = _stratified_split(examples)  # 3 per category held out (27 total)
 
     # ── Before compilation ────────────────────────────────────────────────────
     uncompiled = TriageClassifier()
     before_correct = sum(
         triage_metric(ex, uncompiled(ticket_text=ex.ticket_text)) for ex in valset
     )
-    print(f"Before: {before_correct}/15")
+    print(f"Before: {before_correct}/{len(valset)}")
 
     # ── Compile ───────────────────────────────────────────────────────────────
     compiled = compile_classifier(lm)
@@ -258,4 +302,4 @@ if __name__ == "__main__":
     after_correct = sum(
         triage_metric(ex, compiled(ticket_text=ex.ticket_text)) for ex in valset
     )
-    print(f"After: {after_correct}/15")
+    print(f"After: {after_correct}/{len(valset)}")

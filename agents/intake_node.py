@@ -32,6 +32,9 @@ _PRIORITY_MAP: dict[str, str] = {
     "software_install": "MEDIUM",
     "password_reset": "MEDIUM",
     "leave_approval": "LOW",
+    "access_revoke": "HIGH",
+    "account_lock": "HIGH",
+    "account_delete": "HIGH",
     "unknown": "MEDIUM",
 }
 

@@ -1,7 +1,9 @@
 """Synthetic training examples for the DSPy triage classifier.
 
-60 labelled examples — exactly 10 per category — used for BootstrapFewShot
-compilation.  Each dict maps to a dspy.Example with fields:
+105 labelled examples — 10 for each of the 6 original categories and 15 for
+each of the 3 destructive categories (access_revoke, account_lock,
+account_delete) — used for BootstrapFewShot compilation.  Each dict maps to a
+dspy.Example with fields:
     ticket_text (input), category, confidence, reasoning (outputs).
 """
 
@@ -374,13 +376,301 @@ TRAINING_EXAMPLES: list[dict[str, str | float]] = [
         "confidence": 0.69,
         "reasoning": "Visitor badge request is a facilities/reception workflow outside defined service categories.",
     },
+    # ── access_revoke (15) — remove EXISTING access (≠ access_request) ─────────
+    {
+        "ticket_text": "Revoke John Smith's VPN access — he's transferred departments and no longer needs it.",
+        "category": "access_revoke",
+        "confidence": 0.95,
+        "reasoning": "Removing an existing user's access to a resource is a revocation, not a new grant.",
+    },
+    {
+        "ticket_text": "Please remove Sarah's admin rights on the production AWS account effective immediately.",
+        "category": "access_revoke",
+        "confidence": 0.95,
+        "reasoning": "Stripping previously granted elevated permissions is an access revocation.",
+    },
+    {
+        "ticket_text": "Offboarding: revoke all GitHub repository access for the contractor whose engagement ended yesterday.",
+        "category": "access_revoke",
+        "confidence": 0.96,
+        "reasoning": "Removing repository access during offboarding is a destructive access revocation.",
+    },
+    {
+        "ticket_text": "Take away my former teammate's edit permissions on the Finance SharePoint site.",
+        "category": "access_revoke",
+        "confidence": 0.93,
+        "reasoning": "Removing existing edit permissions on a resource is a revocation.",
+    },
+    {
+        "ticket_text": "We need to revoke database access for the intern now that the project has wrapped up.",
+        "category": "access_revoke",
+        "confidence": 0.94,
+        "reasoning": "Withdrawing previously granted database access is an access revocation.",
+    },
+    {
+        "ticket_text": "Remove the vendor's access to our Salesforce instance — the contract has been terminated.",
+        "category": "access_revoke",
+        "confidence": 0.95,
+        "reasoning": "Terminating a third party's existing access to an application is a revocation.",
+    },
+    {
+        "ticket_text": "Please revoke Mike's access to the HR system; he moved off the people team last week.",
+        "category": "access_revoke",
+        "confidence": 0.94,
+        "reasoning": "Role change requiring removal of existing system access is a revocation.",
+    },
+    {
+        "ticket_text": "Disable the API key and revoke the service account's access to the data warehouse.",
+        "category": "access_revoke",
+        "confidence": 0.93,
+        "reasoning": "Revoking a service account's existing resource access is an access revocation.",
+    },
+    {
+        "ticket_text": "Pull back the elevated permissions we granted Lisa for the migration — it's complete now.",
+        "category": "access_revoke",
+        "confidence": 0.92,
+        "reasoning": "Reversing a temporary permission grant is an access revocation.",
+    },
+    {
+        "ticket_text": "Revoke system access for the employee who resigned this morning.",
+        "category": "access_revoke",
+        "confidence": 0.95,
+        "reasoning": "Removing a departing employee's existing access is a revocation.",
+    },
+    {
+        "ticket_text": "Remove access to the client VPN for the consultant now that the 30-day window has ended.",
+        "category": "access_revoke",
+        "confidence": 0.93,
+        "reasoning": "Ending previously granted time-boxed VPN access is a revocation.",
+    },
+    {
+        "ticket_text": "Please strip write access to the deployment pipeline from the contractor who rolled off.",
+        "category": "access_revoke",
+        "confidence": 0.93,
+        "reasoning": "Removing existing write access to a resource is an access revocation.",
+    },
+    {
+        "ticket_text": "Revoke the shared mailbox access for the analyst who switched roles.",
+        "category": "access_revoke",
+        "confidence": 0.92,
+        "reasoning": "Withdrawing existing mailbox access after a role change is a revocation.",
+    },
+    {
+        "ticket_text": "Cut off access to the production Postgres database for the former DBA contractor.",
+        "category": "access_revoke",
+        "confidence": 0.94,
+        "reasoning": "Removing a former contractor's existing database access is a revocation.",
+    },
+    {
+        "ticket_text": "Take away Confluence admin from the user who left the documentation team.",
+        "category": "access_revoke",
+        "confidence": 0.92,
+        "reasoning": "Removing previously granted admin permissions on a tool is a revocation.",
+    },
+    # ── account_lock (15) — disable/suspend the LOGIN/ACCOUNT (≠ password_reset) ─
+    {
+        "ticket_text": "Lock the contractor's account immediately — we suspect the credentials were compromised.",
+        "category": "account_lock",
+        "confidence": 0.96,
+        "reasoning": "Disabling an account over a suspected compromise is a deliberate account lock, not a password reset.",
+    },
+    {
+        "ticket_text": "Please disable the account for the employee who was let go this afternoon, effective now.",
+        "category": "account_lock",
+        "confidence": 0.96,
+        "reasoning": "Disabling a terminated employee's login is an intentional account lock.",
+    },
+    {
+        "ticket_text": "Security incident: lock down the user account showing logins from an unrecognised country.",
+        "category": "account_lock",
+        "confidence": 0.96,
+        "reasoning": "Locking an account in response to anomalous logins is a security account lock.",
+    },
+    {
+        "ticket_text": "Suspend the account for jdoe pending the HR investigation.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Suspending login access during an investigation is a deliberate account lock.",
+    },
+    {
+        "ticket_text": "Lock the offboarded user's account so they can't sign in over the weekend.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Preventing sign-in for an offboarded user is an account lock.",
+    },
+    {
+        "ticket_text": "Temporarily disable Tom's account while he's on extended leave for security reasons.",
+        "category": "account_lock",
+        "confidence": 0.92,
+        "reasoning": "Disabling login during extended leave is an intentional account lock.",
+    },
+    {
+        "ticket_text": "Freeze the account belonging to the terminated sales rep until the exit process completes.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Freezing a terminated employee's login is an account lock.",
+    },
+    {
+        "ticket_text": "Lock the service account that's been flagged for suspicious automated activity.",
+        "category": "account_lock",
+        "confidence": 0.93,
+        "reasoning": "Locking a flagged service account is a deliberate account lock.",
+    },
+    {
+        "ticket_text": "Please disable login for the vendor account — the engagement is on hold.",
+        "category": "account_lock",
+        "confidence": 0.93,
+        "reasoning": "Disabling a vendor account's login is an account lock.",
+    },
+    {
+        "ticket_text": "Put a hold on the user account that triggered the data-exfiltration alert.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Holding an account after a security alert is an account lock.",
+    },
+    {
+        "ticket_text": "Lock out the former manager's account right away; their last day was yesterday.",
+        "category": "account_lock",
+        "confidence": 0.95,
+        "reasoning": "Locking a departed employee's account is a deliberate account lock.",
+    },
+    {
+        "ticket_text": "Disable the shared kiosk account until we rotate its credentials.",
+        "category": "account_lock",
+        "confidence": 0.9,
+        "reasoning": "Temporarily disabling an account pending credential rotation is an account lock.",
+    },
+    {
+        "ticket_text": "Suspend access for the employee under investigation for a policy violation.",
+        "category": "account_lock",
+        "confidence": 0.93,
+        "reasoning": "Suspending a login during a policy investigation is an account lock.",
+    },
+    {
+        "ticket_text": "Lock the account of the consultant whose NDA has lapsed.",
+        "category": "account_lock",
+        "confidence": 0.92,
+        "reasoning": "Locking a consultant account after an NDA lapse is a deliberate account lock.",
+    },
+    {
+        "ticket_text": "Please disable the AD account for the intern who finished their term today.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Disabling an offboarded intern's AD account is an account lock.",
+    },
+    # ── account_delete (15) — permanent removal of an offboarded user ──────────
+    {
+        "ticket_text": "Delete the offboarded user jdoe from all systems — offboarding was finalised last week.",
+        "category": "account_delete",
+        "confidence": 0.96,
+        "reasoning": "Permanent removal of an offboarded user's account is an account deletion.",
+    },
+    {
+        "ticket_text": "Permanently remove the account for the employee who left three months ago; retention is over.",
+        "category": "account_delete",
+        "confidence": 0.96,
+        "reasoning": "Deleting an account after the retention window is an account deletion.",
+    },
+    {
+        "ticket_text": "Please delete the former contractor's user record now that all handover is complete.",
+        "category": "account_delete",
+        "confidence": 0.95,
+        "reasoning": "Removing a contractor's user record permanently is an account deletion.",
+    },
+    {
+        "ticket_text": "We're cleaning up stale accounts — delete the user who resigned in January.",
+        "category": "account_delete",
+        "confidence": 0.94,
+        "reasoning": "Permanently deleting a stale resigned-user account is an account deletion.",
+    },
+    {
+        "ticket_text": "Remove and delete the test user account we created for the pilot; it's no longer needed.",
+        "category": "account_delete",
+        "confidence": 0.93,
+        "reasoning": "Permanently removing an obsolete test account is an account deletion.",
+    },
+    {
+        "ticket_text": "Delete the account belonging to the terminated employee per the data-retention policy.",
+        "category": "account_delete",
+        "confidence": 0.95,
+        "reasoning": "Policy-driven permanent account removal is an account deletion.",
+    },
+    {
+        "ticket_text": "Please permanently delete the duplicate account that was provisioned by mistake.",
+        "category": "account_delete",
+        "confidence": 0.93,
+        "reasoning": "Permanently removing an erroneously created account is an account deletion.",
+    },
+    {
+        "ticket_text": "Decommission and delete the service account for the project that was sunset.",
+        "category": "account_delete",
+        "confidence": 0.93,
+        "reasoning": "Permanently removing a service account for a sunset project is an account deletion.",
+    },
+    {
+        "ticket_text": "Delete the user profile for the intern whose term ended last quarter.",
+        "category": "account_delete",
+        "confidence": 0.94,
+        "reasoning": "Permanent removal of an offboarded intern's profile is an account deletion.",
+    },
+    {
+        "ticket_text": "Remove the offboarded vendor's account entirely from Active Directory.",
+        "category": "account_delete",
+        "confidence": 0.94,
+        "reasoning": "Entirely removing an account from AD is an account deletion.",
+    },
+    {
+        "ticket_text": "Please delete the account for the employee who passed the 90-day post-departure window.",
+        "category": "account_delete",
+        "confidence": 0.94,
+        "reasoning": "Deleting an account after the post-departure retention window is an account deletion.",
+    },
+    {
+        "ticket_text": "Wipe the former admin's account from the system; HR has signed off on deletion.",
+        "category": "account_delete",
+        "confidence": 0.95,
+        "reasoning": "Permanently wiping an account with HR sign-off is an account deletion.",
+    },
+    {
+        "ticket_text": "Delete the orphaned account that no longer maps to any active employee.",
+        "category": "account_delete",
+        "confidence": 0.92,
+        "reasoning": "Permanently removing an orphaned account is an account deletion.",
+    },
+    {
+        "ticket_text": "Permanently remove the contractor account now that the audit is closed.",
+        "category": "account_delete",
+        "confidence": 0.93,
+        "reasoning": "Permanent removal of a contractor account post-audit is an account deletion.",
+    },
+    {
+        "ticket_text": "Delete the user who left the company and confirm removal from all downstream apps.",
+        "category": "account_delete",
+        "confidence": 0.95,
+        "reasoning": "Permanent deletion of a departed user across systems is an account deletion.",
+    },
 ]
 
-# Sanity check: exactly 60 examples, 10 per category.
-assert len(TRAINING_EXAMPLES) == 60, f"Expected 60 examples, got {len(TRAINING_EXAMPLES)}"
+# Sanity check: 105 examples — 10 for each of the 6 original categories and
+# 15 for each of the 3 destructive categories added for the confirmation gate.
+_EXPECTED_COUNTS: dict[str, int] = {
+    "password_reset": 10,
+    "access_request": 10,
+    "software_install": 10,
+    "leave_approval": 10,
+    "incident_report": 10,
+    "unknown": 10,
+    "access_revoke": 15,
+    "account_lock": 15,
+    "account_delete": 15,
+}
+assert len(TRAINING_EXAMPLES) == sum(_EXPECTED_COUNTS.values()), (
+    f"Expected {sum(_EXPECTED_COUNTS.values())} examples, got {len(TRAINING_EXAMPLES)}"
+)
 _category_counts: dict[str, int] = {}
 for _ex in TRAINING_EXAMPLES:
     _cat = str(_ex["category"])
     _category_counts[_cat] = _category_counts.get(_cat, 0) + 1
-for _cat, _count in _category_counts.items():
-    assert _count == 10, f"Category '{_cat}' has {_count} examples, expected 10"
+assert _category_counts == _EXPECTED_COUNTS, (
+    f"Category counts mismatch: got {_category_counts}, expected {_EXPECTED_COUNTS}"
+)

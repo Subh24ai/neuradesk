@@ -2,9 +2,10 @@
 
 import pytest
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.action_node import action_node
-from agents.graph import _should_escalate, run_ticket
+from agents.graph import _should_escalate, build_initial_state, graph, run_ticket
 
 
 def _base_state(**overrides) -> dict:
@@ -157,3 +158,68 @@ class TestFullGraph:
         result = await run_ticket("I forgot my password", "alice@corp.com", "text")
         if result["status"] == "resolved":
             assert "alice@corp.com" in result["resolution"]
+
+
+class TestDestructiveGateThroughGraph:
+    """End-to-end proof that a destructive ticket halts at the confirmation gate
+    before any enterprise/IAM API call, and reaches the IAM endpoint only after
+    explicit confirmation.
+
+    classify() and the knowledge LLM are patched so the test is deterministic and
+    makes no network calls; _post_enterprise is patched so we can assert whether
+    an API call would have been made.
+    """
+
+    @staticmethod
+    def _fake_llm() -> MagicMock:
+        """A stand-in LLM whose .invoke returns a resolution with a {username} slot."""
+        llm = MagicMock()
+        llm.invoke.return_value = MagicMock(content="Revoke access for {username}.")
+        return llm
+
+    @pytest.mark.asyncio
+    async def test_access_revoke_awaits_confirmation_before_any_api_call(self) -> None:
+        """A ticket classified access_revoke halts at awaiting_confirmation and
+        never invokes _post_enterprise (no API call is made)."""
+        with patch("agents.intake_node.classify", return_value=("access_revoke", 0.95)), \
+             patch("agents.knowledge_node.get_llm", return_value=self._fake_llm()), \
+             patch("agents.action_node._post_enterprise", new_callable=AsyncMock) as mock_post:
+            result = await run_ticket(
+                "Revoke John's VPN access — he left the team", "admin@corp.com", "text"
+            )
+
+        assert result["status"] == "awaiting_confirmation"
+        assert result["intent"] == "access_revoke"
+        assert result["action_confirmed"] is False
+        mock_post.assert_not_called()  # the gate fired BEFORE any API call
+
+    @pytest.mark.asyncio
+    async def test_access_revoke_calls_iam_endpoint_after_confirmation(self) -> None:
+        """With action_confirmed=True the same ticket POSTs to /iam/revoke-access."""
+        iam_response = {
+            "success": True,
+            "action": "revoke-access",
+            "destructive": True,
+            "result": {"revoked": True, "ref": "REV-ABC123"},
+        }
+        initial = build_initial_state(
+            "Revoke John's VPN access — he left the team",
+            user_id="admin@corp.com",
+            channel="text",
+        )
+        initial["action_confirmed"] = True
+
+        with patch("agents.intake_node.classify", return_value=("access_revoke", 0.95)), \
+             patch("agents.knowledge_node.get_llm", return_value=self._fake_llm()), \
+             patch(
+                 "agents.action_node._post_enterprise",
+                 new_callable=AsyncMock,
+                 return_value=iam_response,
+             ) as mock_post:
+            result = await graph.ainvoke(initial)
+
+        assert result["status"] == "resolved"
+        assert result["action_taken"] == "access_revoke_executed"
+        mock_post.assert_awaited_once()
+        # First positional arg to _post_enterprise is the endpoint path.
+        assert mock_post.call_args.args[0] == "/iam/revoke-access"

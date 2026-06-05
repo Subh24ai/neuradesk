@@ -22,6 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from services.audit_log import log_audit
+from services.iam_api import router as iam_router
 
 load_dotenv()
 
@@ -33,8 +34,12 @@ _http_bearer = HTTPBearer(auto_error=True)
 app = FastAPI(
     title="NeuraDesk Mock Enterprise API",
     version="0.1.0",
-    description="Stub ITSM/HR service endpoints — local dev and testing only.",
+    description="Stub ITSM/HR/IAM service endpoints — local dev and testing only.",
 )
+
+# Mount the destructive IAM endpoints (/iam/*) on the same app/base URL so the
+# action node reaches them via the existing ENTERPRISE_API_BASE_URL.
+app.include_router(iam_router)
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────

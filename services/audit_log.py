@@ -32,6 +32,7 @@ _PII_FIELDS: frozenset[str] = frozenset({
     "end_date",      # leave dates — present in approve-leave
     "description",   # free-text incident description — may contain PII
     "message",       # free-text manager notification — may contain PII
+    "reason",        # free-text IAM action reason — may contain names/PII
 })
 
 

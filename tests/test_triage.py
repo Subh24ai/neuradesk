@@ -125,6 +125,32 @@ class TestClassify:
         assert conf == pytest.approx(0.5)
 
 
+class TestDestructiveCategories:
+    """The three destructive categories are recognised and pass through classify()."""
+
+    def test_new_categories_are_valid(self) -> None:
+        """access_revoke, account_lock, account_delete are in VALID_CATEGORIES."""
+        assert {"access_revoke", "account_lock", "account_delete"} <= VALID_CATEGORIES
+
+    def test_classify_access_revoke(self) -> None:
+        """classify() returns 'access_revoke' for a revocation request."""
+        dspy.configure(lm=_make_lm("access_revoke", "0.95", "Removing existing access."))
+        cat, _ = classify("Revoke John's VPN access — he left the team")
+        assert cat == "access_revoke"
+
+    def test_classify_account_lock(self) -> None:
+        """classify() returns 'account_lock' for an account-disable request."""
+        dspy.configure(lm=_make_lm("account_lock", "0.96", "Disabling a compromised account."))
+        cat, _ = classify("Lock the contractor account immediately — credentials compromised")
+        assert cat == "account_lock"
+
+    def test_classify_account_delete(self) -> None:
+        """classify() returns 'account_delete' for a permanent deletion request."""
+        dspy.configure(lm=_make_lm("account_delete", "0.96", "Permanent account removal."))
+        cat, _ = classify("Delete the offboarded user jdoe from all systems")
+        assert cat == "account_delete"
+
+
 class TestCompiledLoad:
     """Tests for _get_classifier() compiled-file loading behaviour."""
 

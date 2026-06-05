@@ -32,7 +32,9 @@ class TicketState(TypedDict):
     # ── Intake node output ────────────────────────────────────────────────
     category: Optional[Literal[
         "password_reset", "access_request", "software_install",
-        "leave_approval", "incident_report", "unknown",
+        "leave_approval", "incident_report",
+        "access_revoke", "account_lock", "account_delete",
+        "unknown",
     ]]
     intent: Optional[str]                   # e.g. "password_reset"
     priority: Optional[str]                 # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"

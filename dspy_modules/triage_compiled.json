@@ -6,107 +6,107 @@
     "demos": [
       {
         "augmented": true,
-        "ticket_text": "I forgot my password and can't log in to my corporate email account.",
-        "category": "password_reset",
-        "confidence": 0.98,
-        "reasoning": "Account lockout due to forgotten password is a classic password reset scenario."
-      },
-      {
-        "augmented": true,
-        "ticket_text": "My Active Directory password expired overnight and I'm locked out of all systems.",
-        "category": "password_reset",
-        "confidence": 0.98,
-        "reasoning": "Account lockout due to password expiration requires a password reset."
-      },
-      {
-        "augmented": true,
-        "ticket_text": "I entered my password wrong too many times and my account is now locked.",
-        "category": "password_reset",
-        "confidence": 0.95,
-        "reasoning": "Account lockout due to excessive incorrect login attempts requires password reset or unlock."
-      },
-      {
-        "augmented": true,
         "ticket_text": "Can someone reset my Windows login password? I can't remember what it is.",
         "category": "password_reset",
         "confidence": 0.98,
-        "reasoning": "Forgotten password is a classic scenario for password reset assistance."
+        "reasoning": "Forgotten password prompting a request for assistance is a classic password reset scenario."
       },
       {
-        "ticket_text": "CRITICAL: database cluster disk usage at 98% \u2014 queries are timing out and writes are failing.",
-        "category": "incident_report",
-        "confidence": 0.99,
-        "reasoning": "Disk-full condition causing query failures is a critical infrastructure incident."
-      },
-      {
-        "ticket_text": "I got a security alert asking me to change my password immediately \u2014 please guide me.",
+        "augmented": true,
+        "ticket_text": "I need a temporary password to get back into my laptop after returning from parental leave.",
         "category": "password_reset",
-        "confidence": 0.92,
-        "reasoning": "Security-triggered password change is a forced password reset workflow."
-      },
-      {
-        "ticket_text": "I require temporary access to the client VPN environment for the next 30 days.",
-        "category": "access_request",
         "confidence": 0.93,
-        "reasoning": "Time-boxed access to a client VPN is a scoped access provisioning request."
+        "reasoning": "Returning employee requiring password assistance is a password reset scenario."
       },
       {
-        "ticket_text": "Can you set up Postman on my machine for API testing?",
-        "category": "software_install",
-        "confidence": 0.95,
-        "reasoning": "Developer tool installation request for API testing purposes."
+        "augmented": true,
+        "ticket_text": "My email password stopped working this morning. I keep getting 'authentication failed'.",
+        "category": "password_reset",
+        "confidence": 0.93,
+        "reasoning": "Authentication failure suggests a password issue requiring a reset."
       },
       {
-        "ticket_text": "Requesting 3 days of bereavement leave following the passing of my grandfather.",
-        "category": "leave_approval",
-        "confidence": 0.98,
-        "reasoning": "Bereavement leave request, a specific and sensitive leave type."
-      },
-      {
-        "ticket_text": "Please install the JIRA desktop client \u2014 the web version is too slow for my workflow.",
-        "category": "software_install",
-        "confidence": 0.94,
-        "reasoning": "Preference-driven request to install a desktop alternative to a web tool."
-      },
-      {
-        "ticket_text": "Can you grant me edit permissions to the shared Engineering Confluence space?",
-        "category": "access_request",
-        "confidence": 0.94,
-        "reasoning": "Permission change request for a collaboration tool's shared workspace."
-      },
-      {
-        "ticket_text": "I need emergency leave today \u2014 there's a family emergency I have to attend to.",
-        "category": "leave_approval",
+        "augmented": true,
+        "ticket_text": "Please help me reset my SSO password \u2014 every tool is showing login errors.",
+        "category": "password_reset",
         "confidence": 0.96,
-        "reasoning": "Urgent same-day emergency leave request."
+        "reasoning": "SSO password reset request due to login errors across multiple tools."
       },
       {
-        "ticket_text": "I need Adobe Acrobat Pro to edit and sign contracts \u2014 can you get it approved and installed?",
-        "category": "software_install",
-        "confidence": 0.95,
-        "reasoning": "Licensed software procurement and installation request."
+        "ticket_text": "Please give me admin rights on my local machine so I can install development tools.",
+        "category": "access_request",
+        "confidence": 0.91,
+        "reasoning": "Request for elevated local administrator permissions on an endpoint."
       },
       {
-        "ticket_text": "I'd like to use my remaining 5 PTO days before December 31st. Please confirm approval.",
-        "category": "leave_approval",
-        "confidence": 0.97,
-        "reasoning": "Year-end PTO balance usage request."
+        "ticket_text": "Where can I find the official template for business travel reimbursement claims?",
+        "category": "unknown",
+        "confidence": 0.63,
+        "reasoning": "Document template location request is not covered by defined IT or HR service categories."
       },
       {
-        "ticket_text": "The CI\/CD pipeline is broken \u2014 all builds are failing and no deployments can go out.",
+        "ticket_text": "Temporarily disable Tom's account while he's on extended leave for security reasons.",
+        "category": "account_lock",
+        "confidence": 0.92,
+        "reasoning": "Disabling login during extended leave is an intentional account lock."
+      },
+      {
+        "ticket_text": "Our monitoring is firing alerts for CPU usage above 95% across all app servers.",
         "category": "incident_report",
-        "confidence": 0.96,
-        "reasoning": "CI\/CD outage blocking all releases is a high-severity engineering incident."
+        "confidence": 0.95,
+        "reasoning": "System-wide high CPU alert indicates an active performance incident."
       },
       {
-        "ticket_text": "I need read access to the production PostgreSQL database for my analytics work.",
+        "ticket_text": "Please disable the AD account for the intern who finished their term today.",
+        "category": "account_lock",
+        "confidence": 0.94,
+        "reasoning": "Disabling an offboarded intern's AD account is an account lock."
+      },
+      {
+        "ticket_text": "I want to update my preferred name and pronouns in the HR profile system.",
+        "category": "unknown",
+        "confidence": 0.58,
+        "reasoning": "Profile update request does not map to password reset, access, or leave categories."
+      },
+      {
+        "ticket_text": "Please disable login for the vendor account \u2014 the engagement is on hold.",
+        "category": "account_lock",
+        "confidence": 0.93,
+        "reasoning": "Disabling a vendor account's login is an account lock."
+      },
+      {
+        "ticket_text": "Remove and delete the test user account we created for the pilot; it's no longer needed.",
+        "category": "account_delete",
+        "confidence": 0.93,
+        "reasoning": "Permanently removing an obsolete test account is an account deletion."
+      },
+      {
+        "ticket_text": "I need access to the HR SharePoint site to review the headcount planning documents.",
         "category": "access_request",
-        "confidence": 0.96,
-        "reasoning": "Explicit request for database access permissions for a defined business purpose."
+        "confidence": 0.94,
+        "reasoning": "SharePoint site access grant is an access provisioning workflow."
+      },
+      {
+        "ticket_text": "I need contributor access to the mobile-app GitHub repository for the upcoming sprint.",
+        "category": "access_request",
+        "confidence": 0.95,
+        "reasoning": "Code repository access is a standard access provisioning request."
+      },
+      {
+        "ticket_text": "My VPN client says my credentials are wrong but my password hasn't changed. Please reset it.",
+        "category": "password_reset",
+        "confidence": 0.91,
+        "reasoning": "Credential rejection on VPN suggests password synchronisation issue requiring reset."
+      },
+      {
+        "ticket_text": "Lock the service account that's been flagged for suspicious automated activity.",
+        "category": "account_lock",
+        "confidence": 0.93,
+        "reasoning": "Locking a flagged service account is a deliberate account lock."
       }
     ],
     "signature": {
-      "instructions": "Classify an enterprise IT\/HR support ticket into the correct service category.\n\nCategories: password_reset | access_request | software_install |\n            leave_approval | incident_report | unknown",
+      "instructions": "Classify an enterprise IT\/HR support ticket into the correct service category.\n\nCategories:\n  password_reset    \u2014 user forgot their password or was locked out by failed\n                      login attempts and needs it reset.\n  access_request    \u2014 grant NEW access or permissions to a resource.\n  software_install  \u2014 install or deploy software on a device.\n  leave_approval    \u2014 request to take leave \/ PTO \/ time off.\n  incident_report   \u2014 an outage, breach, or service degradation.\n  access_revoke     \u2014 REMOVE existing access or permissions from a user\n                      (offboarding, role change). Destructive.\n  account_lock      \u2014 disable, lock, suspend, or freeze a user's account or\n                      login (security or offboarding). Destructive.\n  account_delete    \u2014 permanently delete or remove a user account. Destructive.\n  unknown           \u2014 does not fit any category above.\n\nDisambiguation: access_request GRANTS access while access_revoke REMOVES it;\npassword_reset restores a user's own login while account_lock deliberately\ndisables someone's account.",
       "fields": [
         {
           "prefix": "Ticket Text:",
@@ -114,7 +114,7 @@
         },
         {
           "prefix": "Category:",
-          "description": "Ticket category \u2014 one of: password_reset, access_request, software_install, leave_approval, incident_report, unknown."
+          "description": "Ticket category \u2014 one of: password_reset, access_request, software_install, leave_approval, incident_report, access_revoke, account_lock, account_delete, unknown."
         },
         {
           "prefix": "Confidence:",
