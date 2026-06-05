@@ -15,7 +15,6 @@ os.environ.setdefault("A2A_API_KEY", "test-key")
 # Force empty so org creation is unrestricted in tests; monkeypatch overrides as needed.
 os.environ["ORG_CREATION_SECRET"] = ""
 
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -26,37 +25,6 @@ from sqlalchemy.orm import sessionmaker
 from api.auth import hash_password
 from api.main import app
 from api.models import Base, OrganizationModel, UserModel, get_db
-
-# ── Fixed TicketState returned by mock_run_ticket ─────────────────────────────
-
-_MOCK_TICKET_STATE: dict = {
-    "ticket_id": "mock-ticket-0001",
-    "user_id": "mock-user-id",
-    "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
-    "trace_id": "mock-trace-id",
-    "channel": "text",
-    "raw_text": "I forgot my password",
-    "raw_image_b64": None,
-    "extracted_text": None,
-    "category": "password_reset",
-    "intent": "password_reset",
-    "priority": "MEDIUM",
-    "confidence": 0.92,
-    "entities": {"username": "mock-user-id"},
-    "retrieved_chunks": [{"source": "kb/test.md", "content": "Test chunk", "score": 0.9}],
-    "resolution_template": "Password reset initiated for {username} via IT Portal.",
-    "action_taken": "password_reset_executed",
-    "action_result": {"status": "ok", "data": {"temp_password": "Stub!"}},
-    "action_confirmed": True,
-    "resolution": "Password reset initiated for mock-user-id via IT Portal.",
-    "escalated": None,
-    "escalation_reason": None,
-    "assignee_group": None,
-    "status": "resolved",
-    "error": None,
-    "trace_url": None,
-}
-
 
 # ── Database fixtures ─────────────────────────────────────────────────────────
 
@@ -177,18 +145,6 @@ def sample_image_ticket_payload() -> dict:
             "AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         ),
     }
-
-
-# ── Graph mock ────────────────────────────────────────────────────────────────
-
-@pytest.fixture(scope="function")
-def mock_run_ticket():
-    """Patch api.main.run_ticket to return a deterministic resolved TicketState.
-
-    API tests use this so they are isolated from graph logic and run fast.
-    """
-    with patch("api.main.run_ticket", return_value=_MOCK_TICKET_STATE):
-        yield
 
 
 # ── Enterprise API HTTP mock ──────────────────────────────────────────────────

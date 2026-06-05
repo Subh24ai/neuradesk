@@ -33,7 +33,7 @@ def escalation_node(state: TicketState) -> TicketState:
     log.info("escalation_node.start", ticket_id=state.get("ticket_id"), error=error)
 
     # Determine the most specific reason for escalation.
-    if category == "UNKNOWN":
+    if category == "unknown":
         reason = "Category could not be determined."
     elif confidence < 0.6:
         reason = f"Triage confidence too low ({confidence:.2f} < 0.60)."

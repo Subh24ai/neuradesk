@@ -603,7 +603,6 @@ async def websocket_ticket(
             org_cfg = db.get(OrgConfigModel, ticket.org_id)
             if org_cfg:
                 org_api_url = org_cfg.itsm_url or None
-                support_email = org_cfg.smtp_host and support_email or support_email
                 slack_webhook_url = org_cfg.slack_webhook_url or None
             org_obj = db.get(OrganizationModel, ticket.org_id)
             org_name = org_obj.name if org_obj else ""
