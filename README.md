@@ -181,6 +181,52 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 | `POST` | `/itsm/create-incident` | — | Open incident record |
 | `POST` | `/itsm/notify-manager` | — | Email reporting manager |
 
+## MCP Interface
+
+NeuraDesk ships an [MCP](https://modelcontextprotocol.io) tool server
+(`mcp_server.py`) that exposes a read-only slice of the platform to MCP clients
+such as Claude Desktop over **stdio**. It reuses the same hybrid retriever,
+database, and category taxonomy as the agent graph. Being stdio (client-launched
+and local), it carries no bearer auth — unlike the HTTP A2A and enterprise APIs.
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `search_knowledge` | `query`, `org_id` | Hybrid FAISS + BM25 + cross-encoder search over the global KB merged with an org's private docs; returns the top 3 chunks |
+| `get_ticket_status` | `ticket_id` | Current status, category, resolution, and escalation details for a ticket |
+| `resolve_ticket_info` | `category` | Top 3 knowledge-base resolution steps for a ticket category (retrieval-only) |
+| `list_ticket_categories` | — | All supported ticket categories with descriptions |
+
+**Run it (stdio):**
+```bash
+python mcp_server.py
+```
+The server reads `DATABASE_URL` from the environment — point it at the same
+database the API uses.
+
+**Use with Claude Desktop**
+
+Add this to `claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/claude_desktop_config.json`), using
+absolute paths to your virtualenv's Python and the repo:
+
+```json
+{
+  "mcpServers": {
+    "neuradesk": {
+      "command": "/ABS/PATH/neuradesk/.venv/bin/python",
+      "args": ["/ABS/PATH/neuradesk/mcp_server.py"],
+      "env": {
+        "DATABASE_URL": "sqlite:////ABS/PATH/neuradesk/neuradesk.db"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop, then the four tools appear under the MCP (🔌) menu. Try
+"What ticket categories does NeuraDesk support?" or "Search the knowledge base
+for VPN setup."
+
 ## Benchmarks
 
 | Metric | Value |

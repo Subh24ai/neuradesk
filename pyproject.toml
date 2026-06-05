@@ -56,6 +56,11 @@ dependencies = [
     "httpx>=0.27.0",
     "tenacity>=9.0.0",
     "structlog==24.4.0",
+
+    # MCP (Model Context Protocol stdio tool server).
+    # Ceiling <1.13 is required: mcp 1.13+ requires pydantic>=2.11, which
+    # conflicts with the pinned pydantic==2.10.4 and fastapi 0.115.5 stack.
+    "mcp>=1.12,<1.13",
 ]
 
 [project.optional-dependencies]
