@@ -116,9 +116,16 @@ cd frontend && npm install && npm run dev
 
 **Submit your first ticket:**
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/auth/register \
+# Step 1 — register. With no SMTP configured, the OTP is returned inline as
+# "dev_otp" (dev convenience only). Capture it with jq:
+OTP=$(curl -s -X POST http://localhost:8000/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "you@company.com", "password": "testpass123"}' | jq -r .access_token)
+  -d '{"email": "you@company.com", "password": "testpass123", "first_name": "Ada", "last_name": "Lovelace", "org_name": "Acme Inc"}' | jq -r .dev_otp)
+
+# Step 2 — verify the OTP to activate the account and get an 8-hour JWT:
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/verify-otp \
+  -H "Content-Type: application/json" \
+  -d "{\"email\": \"you@company.com\", \"otp\": \"$OTP\"}" | jq -r .access_token)
 
 curl -s -X POST http://localhost:8000/tickets \
   -H "Authorization: Bearer $TOKEN" \
@@ -167,9 +174,10 @@ neuradesk/
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/register` | — | Create account, returns 8-hour JWT |
+| `POST` | `/auth/register` | — | Create account, sends OTP email; returns dev_otp hint when SMTP unset |
+| `POST` | `/auth/verify-otp` | — | Verify OTP code — returns 8-hour JWT access_token |
 | `POST` | `/auth/login` | — | Login, returns 8-hour JWT |
-| `POST` | `/tickets` | JWT | Run agent graph, persist and return result |
+| `POST` | `/tickets` | JWT | Create pending ticket — agent graph runs over WebSocket /ws/{ticket_id} |
 | `GET` | `/tickets/` | JWT | Last 20 tickets for the authenticated user |
 | `GET` | `/tickets/{id}` | JWT | Full ticket state by ID |
 | `WS` | `/ws/{ticket_id}` | — | Stream per-node status events in real time |
@@ -192,6 +200,9 @@ All endpoints require `Authorization: Bearer <ENTERPRISE_API_SECRET>` and append
 | `POST` | `/hr/approve-leave` | — | Approve leave request |
 | `POST` | `/itsm/create-incident` | — | Open incident record |
 | `POST` | `/itsm/notify-manager` | — | Email reporting manager |
+| `POST` | `/iam/revoke-access` | ✅ | Remove user's existing access to a resource |
+| `POST` | `/iam/lock-account` | ✅ | Disable/suspend a user's account |
+| `POST` | `/iam/delete-account` | ✅ | Permanently delete a user account (requires confirm=true) |
 
 ## MCP Interface
 
@@ -250,8 +261,8 @@ for VPN setup."
 | Success rate | 100/100 |
 | RAG faithfulness score (RAGAS)        | 1.000 (10-question eval, llama-3.1-8b-instant judge) |
 | RAG answer relevancy (RAGAS)          | 0.439 (10-question eval, llama-3.1-8b-instant judge) |
-| DSPy classifier accuracy — zero-shot  | 66.7% (10/15) |
-| DSPy classifier accuracy — compiled   | 93.3% (14/15) |
+| DSPy classifier accuracy — zero-shot  | 92.6% (25/27) |
+| DSPy classifier accuracy — compiled   | 96.3% (26/27) |
 
 See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 
@@ -285,14 +296,14 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 
 - Mock enterprise APIs — `services/enterprise_api.py` stubs only; no real ITSM/HR integration
 - Groq single point of failure — no fallback LLM configured
-- `audit.jsonl` unbounded — no rotation or max-size policy
+- Audit log: RotatingFileHandler, 10 MB max, 5 backups (~60 MB cap)
 - RAG answer relevancy 0.44 — corpus too small; improves with more KB documents
 - `SUPPORT_EMAIL` / SMTP must be configured manually per org
 
 ## Roadmap
 
 - ✅ **Week 1** — Core scaffold: LangGraph skeleton, FastAPI, JWT auth, mock enterprise API, 33 passing tests
-- ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 93.3% ✓, all agents live ✓ — 80 tests green
+- ✅ **Week 2** — RAG (faithfulness 1.0) ✓, DSPy 96.3% ✓, all agents live ✓ — 80 tests green
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
 - ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
 - ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green

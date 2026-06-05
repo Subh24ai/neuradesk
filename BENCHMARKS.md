@@ -6,11 +6,11 @@ Metrics collected during development.  Week 4 targets include load-test numbers 
 
 | Metric | Value |
 |---|---|
-| DSPy classifier accuracy (before) | 66.7% (10/15) |
-| DSPy classifier accuracy (after)  | 93.3% (14/15) |
-| DSPy error reduction              | 40% via BootstrapFewShot |
-| Training set | 45 synthetic examples (10 per category) |
-| Validation set | 15 synthetic examples (held-out) |
+| DSPy classifier accuracy (before) | 92.6% (25/27) |
+| DSPy classifier accuracy (after)  | 96.3% (26/27) |
+| DSPy error reduction              | 50% via BootstrapFewShot |
+| Training set | 78 synthetic examples across 9 categories |
+| Validation set | 27 synthetic examples (3 per category, held-out) |
 | Optimizer | BootstrapFewShot, max_bootstrapped_demos=4 |
 | Model | llama-3.3-70b-versatile (Groq) |
 
