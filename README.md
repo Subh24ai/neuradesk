@@ -30,7 +30,7 @@ graph TD
     D -->|destructive intent| GATE{Confirmation gate<br/>access_revoke · account_lock · account_delete}
     GATE -->|confirmed| IAM[IAM API<br/>bearer auth · audit log]
     IAM -->|executed| E
-    GATE -->|cancelled| F
+    GATE -->|cancelled| G
 
     D -->|resolved| E([Ticket resolved<br/>WebSocket · LangSmith trace])
     D -->|low confidence · unknown · API error| F[Escalation Agent]
