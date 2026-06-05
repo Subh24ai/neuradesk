@@ -7,10 +7,9 @@
 [![Tests](https://img.shields.io/badge/tests-202%20passing-brightgreen)](tests/)
 
 ## Live Demo
-
-> **[https://neuradesk-112430812621.us-central1.run.app](https://neuradesk-112430812621.us-central1.run.app)** — live on GCP Cloud Run
->
-> Register → submit a ticket → watch the 4-node agent timeline resolve it in real time.
+- **App**: https://neuradesk-112430812621.us-central1.run.app
+- **A2A Agent Card**: https://neuradesk-112430812621.us-central1.run.app/.well-known/agent.json
+- **API Docs**: https://neuradesk-112430812621.us-central1.run.app/docs
 
 ---
 
@@ -206,8 +205,9 @@ database the API uses.
 **Use with Claude Desktop**
 
 Add this to `claude_desktop_config.json` (macOS:
-`~/Library/Application Support/Claude/claude_desktop_config.json`), using
-absolute paths to your virtualenv's Python and the repo:
+`~/Library/Application Support/Claude/claude_desktop_config.json`). The snippet
+uses absolute paths — replace every `/ABS/PATH/` placeholder with your own
+virtualenv Python and repo paths:
 
 ```json
 {
