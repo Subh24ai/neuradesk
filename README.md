@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-183%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-202%20passing-brightgreen)](tests/)
 
 ## Live Demo
 
