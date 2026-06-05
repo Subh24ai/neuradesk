@@ -23,13 +23,26 @@ NeuraDesk routes every incoming ticket through four specialized LangGraph agents
 
 ```mermaid
 graph TD
-    A([Employee]) -->|text or screenshot| B[Intake Agent]
-    B -->|category, intent, confidence| C[Knowledge Agent]
-    C -->|chunks + resolution template| D[Action Agent]
-    D -->|resolved| E([Ticket Resolved])
-    D -->|low confidence, unknown, or destructive unconfirmed| F[Escalation Agent]
-    F -->|full context attached| G([Human Queue])
+    A([Employee]) -->|text or screenshot| B[Intake Agent<br/>Vision OCR · DSPy triage · 9 categories]
+    B -->|category + confidence| C[Knowledge Agent<br/>FAISS + BM25 + cross-encoder RAG]
+    C -->|grounded resolution| D[Action Agent<br/>ITSM · HR · IAM APIs]
+
+    D -->|destructive intent| GATE{Confirmation gate<br/>access_revoke · account_lock · account_delete}
+    GATE -->|confirmed| IAM[IAM API<br/>bearer auth · audit log]
+    IAM -->|executed| E
+    GATE -->|cancelled| F
+
+    D -->|resolved| E([Ticket resolved<br/>WebSocket · LangSmith trace])
+    D -->|low confidence · unknown · API error| F[Escalation Agent]
+    F -->|structured handoff| G([Human queue<br/>email · Slack])
+
+    C -.->|A2A HTTP/SSE| EXT1([External agent])
+    C -.->|MCP stdio| EXT2([Claude Desktop])
 ```
+
+**Key:**
+- Solid arrows — primary ticket flow
+- Dashed arrows — external protocol surfaces
 
 | Agent | Role |
 |---|---|
