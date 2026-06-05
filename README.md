@@ -115,7 +115,7 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 183 tests
+pytest tests/ -v          # 202 tests
 ```
 
 **Run the load test:**
@@ -283,7 +283,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 - ✅ **Week 3** — A2A protocol ✓, LangSmith tracing ✓, CI/CD ✓ — 111 tests green
 - ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
 - ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green
-- ✅ **v1.2 security** — prompt injection guard, RAG threshold fix, real session management, Docker env fix, GCP Cloud Run deploy — 183 tests green
+- ✅ **v1.2 security** — prompt injection guard, RAG threshold fix, real session management, Docker env fix, GCP Cloud Run deploy — 202 tests green
 
 ---
 
