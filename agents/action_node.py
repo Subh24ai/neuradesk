@@ -54,7 +54,8 @@ async def _post_enterprise(
 ) -> dict[str, Any]:
     """POST payload to the enterprise API with exponential-backoff retry.
 
-    Retries up to 3 times on transient network/timeout errors.
+    Makes up to 4 attempts (1 initial + 3 retries) on transient
+    network/timeout errors.
     4xx client errors are not retried.
     """
     last_exc: Exception | None = None
@@ -163,7 +164,6 @@ async def action_node(state: TicketState) -> TicketState:
       - Destructive intents (access_revoke, account_lock, account_delete) →
         blocked until action_confirmed=True.
       - Mapped intents → POST to enterprise API via _post_enterprise().
-      - Unmapped confirmed intents (legacy destructive ops) → stub resolve.
 
     Reads:  intent, entities, resolution_template, action_confirmed, user_id, priority
     Writes: action_taken, action_result, action_confirmed, resolution, status,
@@ -207,7 +207,7 @@ async def action_node(state: TicketState) -> TicketState:
         state.get("resolution_template") or "Action completed."
     ).format(**fmt)
 
-    # 4. Call enterprise API or fall back to stub for unmapped intents.
+    # 4. Call the enterprise API for the mapped intent.
     endpoint: str | None = _ENDPOINT_MAP.get(intent)
 
     try:
@@ -218,13 +218,6 @@ async def action_node(state: TicketState) -> TicketState:
             action_result: dict[str, Any] = await _post_enterprise(
                 endpoint, payload, base_url, secret
             )
-        else:
-            # Confirmed legacy destructive intent with no direct endpoint
-            # (e.g. access_revoke) — acknowledge without an API call.
-            action_result = {
-                "status": "ok",
-                "data": {"action": intent, "acknowledged": True},
-            }
 
         updates: dict = {
             "action_taken": f"{intent}_executed",

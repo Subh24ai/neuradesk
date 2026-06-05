@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,9 +24,16 @@ class Settings(BaseSettings):
     enterprise_api_timeout: float = 10.0
     email_smtp_timeout: int = 15
     slack_webhook_timeout: float = 5.0
-    a2a_query_timeout: int = 30
+    # Preserve the historical env var name the code read directly before the
+    # Settings consolidation (field name alone would map to A2A_QUERY_TIMEOUT).
+    a2a_query_timeout: int = Field(
+        default=30, validation_alias="A2A_QUERY_TIMEOUT_SECONDS"
+    )
     a2a_max_concurrent_subscriptions: int = 10
-    graph_execution_timeout: int = 120
+    # Preserve historical env var name (field name alone → GRAPH_EXECUTION_TIMEOUT).
+    graph_execution_timeout: int = Field(
+        default=120, validation_alias="GRAPH_EXECUTION_TIMEOUT_SECONDS"
+    )
 
     # ── Retry ─────────────────────────────────────────────────────────────
     action_retry_delays: list[float] = [1.0, 2.0, 4.0]

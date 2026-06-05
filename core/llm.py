@@ -37,6 +37,7 @@ def get_llm() -> BaseChatModel:
         )
 
     if provider == "openai":
+        # Requires the optional OpenAI extra: pip install -e ".[openai]"
         from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
 
         return ChatOpenAI(

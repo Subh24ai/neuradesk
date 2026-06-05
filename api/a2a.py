@@ -26,8 +26,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agents.knowledge_node import knowledge_node
 from agents.state import TicketState
+from core.config import get_settings
 
 log = structlog.get_logger(__name__)
+_cfg = get_settings()
 
 router = APIRouter(tags=["a2a"])
 
@@ -39,10 +41,8 @@ if not _A2A_API_KEY:
         "A2A_API_KEY env var is not set — refusing to start with A2A task endpoints unauthenticated"
     )
 
-_A2A_QUERY_TIMEOUT: int = int(os.environ.get("A2A_QUERY_TIMEOUT_SECONDS", "30"))
-_A2A_MAX_CONCURRENT_SUBSCRIPTIONS: int = int(
-    os.environ.get("A2A_MAX_CONCURRENT_SUBSCRIPTIONS", "10")
-)
+_A2A_QUERY_TIMEOUT: int = _cfg.a2a_query_timeout
+_A2A_MAX_CONCURRENT_SUBSCRIPTIONS: int = _cfg.a2a_max_concurrent_subscriptions
 _subscribe_semaphore: asyncio.Semaphore = asyncio.Semaphore(_A2A_MAX_CONCURRENT_SUBSCRIPTIONS)
 
 _a2a_bearer = HTTPBearer(auto_error=True)

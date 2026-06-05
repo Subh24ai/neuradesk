@@ -71,13 +71,13 @@ _STREAM_FIELDS = frozenset(
 )
 
 # Maximum seconds the LangGraph execution may run before the WebSocket is aborted.
-_GRAPH_EXECUTION_TIMEOUT: int = int(os.getenv("GRAPH_EXECUTION_TIMEOUT_SECONDS", "120"))
+_GRAPH_EXECUTION_TIMEOUT: int = _cfg.graph_execution_timeout
 
 # How often the stale-ticket recovery job runs (seconds).
-_STALE_TICKET_POLL_SECONDS: int = int(os.getenv("STALE_TICKET_POLL_SECONDS", "300"))
+_STALE_TICKET_POLL_SECONDS: int = _cfg.stale_ticket_poll_seconds
 
 # How often each worker polls the FAISS sentinel file for cross-worker index updates.
-_FAISS_RELOAD_POLL_SECONDS: int = int(os.getenv("FAISS_RELOAD_POLL_SECONDS", "30"))
+_FAISS_RELOAD_POLL_SECONDS: int = _cfg.faiss_reload_poll_seconds
 
 
 def _recover_stale_tickets() -> None:

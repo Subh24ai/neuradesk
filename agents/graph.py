@@ -6,7 +6,7 @@ Topology:
 The conditional edge after action_node routes to escalation_node when:
   - status == "escalated"           (destructive action, unhandled exception)
   - confidence < 0.6                (low-confidence triage)
-  - category == "UNKNOWN"
+  - category == "unknown"
 """
 
 import os
