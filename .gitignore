@@ -72,3 +72,4 @@ interview.md
 # Local data backups & runtime artifacts — contain PII, never commit
 registration_wipe_backup_*.json
 faiss_reload.sentinel
+*.log
