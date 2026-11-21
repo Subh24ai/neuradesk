@@ -93,6 +93,11 @@ class UserModel(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     otp: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
     otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Failed OTP verification attempts for the current code — locks after a cap
+    # to stop brute-forcing the 6-digit code. Reset whenever a new OTP is issued.
+    otp_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -235,6 +240,25 @@ class TicketCommentModel(Base):
     is_admin_note: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class AdminEventModel(Base):
+    """Durable admin-dashboard event enabling cross-worker SSE fan-out.
+
+    In-process queues only reach admins connected to the same web worker.
+    Persisting each ticket event and having every /admin/stream connection poll
+    this table makes the live feed correct under any number of workers.
+    """
+
+    __tablename__ = "admin_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True,
+        default=lambda: datetime.now(timezone.utc),
     )
 
 

@@ -2,10 +2,11 @@
 
 import asyncio
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Awaitable, Callable, Optional
 
 import structlog
 from dotenv import load_dotenv
@@ -81,13 +82,20 @@ _FAISS_RELOAD_POLL_SECONDS: int = _cfg.faiss_reload_poll_seconds
 
 
 def _recover_stale_tickets() -> None:
-    """Mark tickets stuck in 'pending' beyond GRAPH_EXECUTION_TIMEOUT_SECONDS as failed."""
+    """Mark tickets stuck in 'pending'/'processing' beyond the graph timeout as failed.
+
+    'pending'    → no runner ever claimed it (worker down).
+    'processing' → a runner claimed it but died mid-run (crash / instance recycle).
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=_GRAPH_EXECUTION_TIMEOUT)
     db = SessionLocal()
     try:
         stale = (
             db.query(TicketModel)
-            .filter(TicketModel.status == "pending", TicketModel.created_at < cutoff)
+            .filter(
+                TicketModel.status.in_(["pending", "processing"]),
+                TicketModel.created_at < cutoff,
+            )
             .all()
         )
         for ticket in stale:
@@ -138,6 +146,46 @@ async def _faiss_reload_loop() -> None:
             log.exception("faiss_reload.loop_error")
 
 
+# How often the worker scans for unclaimed tickets, and how long it waits before
+# claiming one (a grace window that lets a browser WebSocket claim first so the
+# user still gets the live per-node timeline).
+_PENDING_TICKET_POLL_SECONDS: float = 2.0
+_PENDING_TICKET_GRACE_SECONDS: int = 5
+
+
+async def _pending_ticket_worker() -> None:
+    """Process tickets that no WebSocket claimed (API clients, dropped connections).
+
+    Ticket processing is decoupled from the client connection: every ticket is
+    guaranteed to run here even if a WebSocket never opens. The claim is atomic,
+    so this never double-runs a ticket a WebSocket is already handling.
+    """
+    while True:
+        await asyncio.sleep(_PENDING_TICKET_POLL_SECONDS)
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=_PENDING_TICKET_GRACE_SECONDS)
+            db = SessionLocal()
+            try:
+                ids = [
+                    r.id
+                    for r in db.query(TicketModel.id)
+                    .filter(TicketModel.status == "pending", TicketModel.created_at < cutoff)
+                    .order_by(TicketModel.created_at.asc())
+                    .limit(20)
+                    .all()
+                ]
+            finally:
+                db.close()
+            for tid in ids:
+                if _claim_ticket(tid):
+                    try:
+                        await _process_ticket(tid)
+                    except Exception:
+                        log.exception("pending_worker.process_error", ticket_id=tid)
+        except Exception:
+            log.exception("pending_worker.loop_error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup: create DB tables, configure DSPy, init checkpointer, start recovery loop.
@@ -158,11 +206,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         recovery_task = asyncio.create_task(_stale_ticket_recovery_loop())
         faiss_reload_task = asyncio.create_task(_faiss_reload_loop())
+        pending_worker_task = asyncio.create_task(_pending_ticket_worker())
         try:
             yield
         finally:
             log.info("app.shutdown")
-            for task in (recovery_task, faiss_reload_task):
+            for task in (recovery_task, faiss_reload_task, pending_worker_task):
                 task.cancel()
                 try:
                     await task
@@ -238,6 +287,19 @@ def health_deep() -> dict:
     except Exception as exc:
         checks["rag"] = f"error: {exc}"
 
+    # LLM provider config check — cheap (verifies a key is present, no round-trip),
+    # so the UI "agents online" badge reflects real reachability, not just liveness.
+    provider = os.getenv("LLM_PROVIDER", "groq").lower()
+    _key_var = {
+        "groq": "GROQ_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+    }.get(provider)
+    if _key_var and os.getenv(_key_var):
+        checks["llm"] = "ok"
+    else:
+        checks["llm"] = f"error: {_key_var or 'LLM_PROVIDER'} not configured"
+
     all_ok = all(v == "ok" for v in checks.values())
     if not all_ok:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=checks)
@@ -299,7 +361,7 @@ def list_tickets(
     response_model=TicketResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["tickets"],
-    summary="Create a pending ticket — caller must open /ws/{ticket_id} to run the agent graph",
+    summary="Create a ticket — processed server-side; open /ws/{ticket_id} for the live timeline",
 )
 @limiter.limit("30/minute")
 def create_ticket(
@@ -308,7 +370,13 @@ def create_ticket(
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketResponse:
-    """Persist a pending ticket and return immediately. The agent graph runs over WebSocket."""
+    """Persist a pending ticket and return immediately.
+
+    Processing is decoupled from the client: a background worker runs the agent
+    graph whether or not a WebSocket connects, so API clients work too. Opening
+    ``/ws/{ticket_id}`` claims the ticket first and streams the live per-node
+    timeline; the result is always persisted and visible in ticket history.
+    """
     ticket_id = str(uuid.uuid4())
     try:
         image_url: Optional[str] = None
@@ -432,9 +500,20 @@ def confirm_action(
         user_email=current_user.email,
         slack_webhook_url=slack_webhook_url,
     )
+    # Carry the ORIGINAL triage into the replay so intake_node short-circuits
+    # instead of re-classifying. Re-running the LLM here could execute a
+    # different action than the one the user just authorized.
+    initial_state["category"] = ticket.category  # type: ignore[index]
+    initial_state["intent"] = ticket.intent or ticket.category  # type: ignore[index]
+    initial_state["priority"] = ticket.priority  # type: ignore[index]
+    initial_state["confidence"] = ticket.confidence  # type: ignore[index]
     initial_state["action_confirmed"] = True  # type: ignore[index]
 
-    final_state: dict = langgraph_graph.invoke(initial_state)
+    # Pass a thread_id so the call succeeds whether or not a checkpointer is
+    # configured (a checkpointer-compiled graph requires it).
+    final_state: dict = langgraph_graph.invoke(
+        initial_state, config={"configurable": {"thread_id": ticket_id}}
+    )
 
     ticket.status = final_state.get("status", "resolved")
     ticket.category = final_state.get("category")
@@ -444,8 +523,31 @@ def confirm_action(
     ticket.escalation_reason = final_state.get("escalation_reason")
     ticket.assignee_group = final_state.get("assignee_group")
     ticket.priority = final_state.get("priority")
+    ticket.trace_url = get_trace_url() or ticket.trace_url
     db.commit()
     db.refresh(ticket)
+
+    # Mirror the WebSocket path: notify admins (SSE) and the owner (email) so a
+    # confirmed action isn't silently invisible to the dashboard and the user.
+    if ticket.org_id:
+        _publish_sse(ticket.org_id, {
+            "ticket_id": ticket.id,
+            "status": ticket.status,
+            "category": ticket.category,
+            "resolution": ticket.resolution,
+            "escalation_reason": ticket.escalation_reason,
+            "user_email": current_user.email,
+            "priority": ticket.priority,
+            "assignee_group": ticket.assignee_group,
+        })
+    if ticket.status == "resolved":
+        try:
+            send_ticket_notification(
+                current_user.email, ticket_id, ticket.status,
+                ticket.resolution, ticket.escalation_reason,
+            )
+        except Exception:
+            log.warning("tickets.confirm_action.notify_failed", ticket_id=ticket_id)
 
     log.info("tickets.confirm_action.done", ticket_id=ticket_id, status=ticket.status)
     return _orm_to_response(ticket)
@@ -522,6 +624,213 @@ def get_ticket_comments(
     return CommentListResponse(comments=comments, total=len(comments))
 
 
+# ── Ticket processing (decoupled from the client connection) ──────────────────
+# The agent graph runs here, not inside the WebSocket. Both the WebSocket (for a
+# live timeline) and the background worker (for API clients / dropped sockets)
+# call _process_ticket after winning an atomic claim, so a ticket is always
+# processed exactly once regardless of whether a client is watching.
+
+_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"resolved", "escalated", "failed", "awaiting_confirmation"}
+)
+
+
+def _load_org_context(db: Session, ticket: TicketModel) -> dict:
+    """Return org-scoped runtime context (KB docs, API/SMTP/Slack overrides)."""
+    ctx: dict = {
+        "org_name": "",
+        "org_kb_docs": [],
+        "org_api_url": None,
+        "support_email": os.getenv("SUPPORT_EMAIL", ""),
+        "slack_webhook_url": None,
+    }
+    if ticket.org_id:
+        kb_rows = (
+            db.query(OrgKnowledgeDocModel)
+            .filter(OrgKnowledgeDocModel.org_id == ticket.org_id)
+            .all()
+        )
+        ctx["org_kb_docs"] = [{"title": r.title, "content": r.content} for r in kb_rows]
+        org_cfg = db.get(OrgConfigModel, ticket.org_id)
+        if org_cfg:
+            ctx["org_api_url"] = org_cfg.itsm_url or None
+            ctx["slack_webhook_url"] = org_cfg.slack_webhook_url or None
+        org_obj = db.get(OrganizationModel, ticket.org_id)
+        ctx["org_name"] = org_obj.name if org_obj else ""
+    return ctx
+
+
+def _claim_ticket(ticket_id: str) -> bool:
+    """Atomically move a ticket from 'pending' to 'processing'.
+
+    Returns True only for the single caller that won the claim, so the WebSocket
+    and the background worker never process the same ticket twice.
+    """
+    db = SessionLocal()
+    try:
+        updated = (
+            db.query(TicketModel)
+            .filter(TicketModel.id == ticket_id, TicketModel.status == "pending")
+            .update({"status": "processing"}, synchronize_session=False)
+        )
+        db.commit()
+        return updated == 1
+    except Exception:
+        db.rollback()
+        log.exception("ticket.claim_failed", ticket_id=ticket_id)
+        return False
+    finally:
+        db.close()
+
+
+async def _process_ticket(
+    ticket_id: str,
+    on_node: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+) -> dict:
+    """Run the agent graph for an already-claimed ticket, persist, and notify.
+
+    Call with ``on_node`` to stream per-node events to a WebSocket; call without
+    it from the background worker. Opens its own DB session and never depends on
+    a live client connection. Returns the terminal {status, resolution,
+    escalation_reason, assignee_group, trace_url}.
+    """
+    db = SessionLocal()
+    try:
+        ticket = db.get(TicketModel, ticket_id)
+        if ticket is None:
+            return {"status": "failed"}
+        owner = db.get(UserModel, ticket.user_id)
+        user_email = owner.email if owner else ""
+        ctx = _load_org_context(db, ticket)
+
+        initial_state = build_initial_state(
+            ticket.raw_text,
+            user_email or ticket.user_id,
+            ticket.channel or "text",
+            org_id=ticket.org_id,
+            raw_image_b64=ticket.raw_image_b64,
+            user_email=user_email,
+            **ctx,
+        )
+        final_state: dict = {}
+
+        async def _run() -> None:
+            async for chunk in langgraph_graph.astream(
+                initial_state,
+                config={"configurable": {"thread_id": ticket_id}},
+                stream_mode="updates",
+            ):
+                for node_name, node_output in chunk.items():
+                    final_state.update(node_output)
+                    if on_node is not None:
+                        await on_node(node_name, node_output)
+
+        try:
+            await asyncio.wait_for(_run(), timeout=_GRAPH_EXECUTION_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.error("ticket.process_timeout", ticket_id=ticket_id)
+            ticket.status = "failed"
+            ticket.escalation_reason = "Graph execution timed out"
+            db.commit()
+            return {"status": "failed", "escalation_reason": "Graph execution timed out"}
+        except asyncio.CancelledError:
+            # Client vanished (WS path) — keep going so results still persist.
+            log.info("ticket.process_cancelled", ticket_id=ticket_id)
+        except Exception as exc:
+            log.exception("ticket.process_error", ticket_id=ticket_id, error=str(exc))
+
+        trace_url: Optional[str] = get_trace_url() or final_state.get("trace_url")
+        if not final_state:
+            ticket.status = "failed"
+            ticket.escalation_reason = "Graph execution failed before any node completed"
+        else:
+            ticket.status = final_state.get("status", "failed")
+        ticket.category = final_state.get("category")
+        ticket.intent = final_state.get("intent")
+        ticket.confidence = final_state.get("confidence")
+        ticket.resolution = final_state.get("resolution")
+        ticket.escalation_reason = final_state.get("escalation_reason")
+        ticket.assignee_group = final_state.get("assignee_group")
+        ticket.priority = final_state.get("priority")
+        ticket.trace_url = trace_url
+        db.commit()
+        log.info("ticket.processed", ticket_id=ticket_id, status=ticket.status)
+
+        result = {
+            "status": ticket.status,
+            "resolution": ticket.resolution,
+            "escalation_reason": ticket.escalation_reason,
+            "assignee_group": ticket.assignee_group,
+            "category": ticket.category,
+            "trace_url": trace_url,
+        }
+
+        if ticket.org_id:
+            _publish_sse(ticket.org_id, {
+                "ticket_id": ticket.id,
+                "status": ticket.status,
+                "category": ticket.category,
+                "resolution": ticket.resolution,
+                "escalation_reason": ticket.escalation_reason,
+                "user_email": user_email or None,
+                "priority": ticket.priority,
+                "assignee_group": ticket.assignee_group,
+            })
+
+        # Owner email on resolution (escalations notify from escalation_node).
+        if ticket.status == "resolved" and user_email:
+            try:
+                asyncio.get_running_loop().run_in_executor(
+                    None, send_ticket_notification,
+                    user_email, ticket_id, ticket.status,
+                    ticket.resolution, ticket.escalation_reason,
+                )
+            except Exception:
+                log.warning("ticket.notify_failed", ticket_id=ticket_id)
+
+        return result
+    finally:
+        db.close()
+
+
+async def _observe_ticket(ticket_id: str, websocket: WebSocket) -> dict:
+    """Stream a ticket's outcome to a WebSocket that did NOT win the claim.
+
+    Used when another runner (the worker, or a prior connection) is already
+    processing — polls the DB until terminal and emits a synthetic final event
+    so the client's timeline still renders the result.
+    """
+    deadline = time.monotonic() + _GRAPH_EXECUTION_TIMEOUT
+    while time.monotonic() < deadline:
+        db = SessionLocal()
+        try:
+            t = db.get(TicketModel, ticket_id)
+            if t is None:
+                return {"status": "failed"}
+            fields = {
+                "status": t.status,
+                "resolution": t.resolution,
+                "escalation_reason": t.escalation_reason,
+                "assignee_group": t.assignee_group,
+                "category": t.category,
+                "trace_url": t.trace_url,
+            }
+        finally:
+            db.close()
+        if fields["status"] in _TERMINAL_STATUSES:
+            try:
+                await websocket.send_json({
+                    "node": "action_node",
+                    "status": "done",
+                    "output": {k: str(v) for k, v in fields.items() if v is not None},
+                })
+            except Exception:
+                pass
+            return fields
+        await asyncio.sleep(0.4)
+    return {"status": "failed"}
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{ticket_id}")
@@ -584,135 +893,44 @@ async def websocket_ticket(
             await websocket.close(1008)
             return
 
-        owner = db.get(UserModel, ticket.user_id)
-        display_name: str = owner.email if owner else caller_id
-
-        # Load org context: per-org KB docs and API config overrides.
-        org_kb_docs: list[dict] = []
-        org_api_url: Optional[str] = None
-        org_name: str = ""
-        support_email: str = os.getenv("SUPPORT_EMAIL", "")
-        slack_webhook_url: Optional[str] = None
-        if ticket.org_id:
-            kb_rows = (
-                db.query(OrgKnowledgeDocModel)
-                .filter(OrgKnowledgeDocModel.org_id == ticket.org_id)
-                .all()
-            )
-            org_kb_docs = [{"title": r.title, "content": r.content} for r in kb_rows]
-            org_cfg = db.get(OrgConfigModel, ticket.org_id)
-            if org_cfg:
-                org_api_url = org_cfg.itsm_url or None
-                slack_webhook_url = org_cfg.slack_webhook_url or None
-            org_obj = db.get(OrganizationModel, ticket.org_id)
-            org_name = org_obj.name if org_obj else ""
-
-        initial_state = build_initial_state(
-            ticket.raw_text, display_name, ticket.channel or "text",
-            org_id=ticket.org_id,
-            org_name=org_name,
-            org_kb_docs=org_kb_docs,
-            org_api_url=org_api_url,
-            raw_image_b64=ticket.raw_image_b64,
-            support_email=support_email,
-            user_email=owner.email if owner else "",
-            slack_webhook_url=slack_webhook_url,
-        )
-        final_state: dict = {}
-
-        async def _stream() -> None:
-            async for chunk in langgraph_graph.astream(
-                initial_state,
-                config={"configurable": {"thread_id": ticket_id}},
-                stream_mode="updates",
-            ):
-                for node_name, node_output in chunk.items():
-                    log.debug("ws.node_complete", ticket_id=ticket_id, node=node_name)
-                    try:
-                        await websocket.send_json({
-                            "node": node_name,
-                            "status": "done",
-                            "output": {
-                                k: str(v)
-                                for k, v in node_output.items()
-                                if k in _STREAM_FIELDS and v is not None
-                            },
-                        })
-                    except Exception:
-                        pass
-                    final_state.update(node_output)
-
-        try:
-            await asyncio.wait_for(_stream(), timeout=_GRAPH_EXECUTION_TIMEOUT)
-        except asyncio.TimeoutError:
-            log.error("ws.astream_timeout", ticket_id=ticket_id, timeout=_GRAPH_EXECUTION_TIMEOUT)
-            ticket.status = "failed"
-            ticket.escalation_reason = "Graph execution timed out"
-            db.commit()
+        # The WebSocket no longer runs the graph itself — processing is decoupled.
+        # Win the atomic claim → run the graph here and stream the live timeline.
+        # Lose it (the background worker or an earlier connection is already on it,
+        # or it is already done) → observe the outcome from the DB. Either way the
+        # ticket is guaranteed to be processed exactly once.
+        async def _send_node(node_name: str, node_output: dict) -> None:
             try:
-                await websocket.send_json({"error": "An internal error occurred.", "code": "WS_TIMEOUT"})
+                await websocket.send_json({
+                    "node": node_name,
+                    "status": "done",
+                    "output": {
+                        k: str(v)
+                        for k, v in node_output.items()
+                        if k in _STREAM_FIELDS and v is not None
+                    },
+                })
             except Exception:
                 pass
-            return
-        except asyncio.CancelledError:
-            log.info("ws.astream_cancelled", ticket_id=ticket_id)
-            # Do NOT re-raise — DB commit must still run below.
-        except BaseException as exc:
-            log.exception("ws.astream_failed", ticket_id=ticket_id, error=str(exc))
 
-        # Always persist to DB regardless of whether the client is still connected.
-        trace_url: Optional[str] = get_trace_url() or final_state.get("trace_url")
-        if not final_state:
-            ticket.status = "failed"
-            ticket.escalation_reason = "Graph execution failed before any node completed"
+        if _claim_ticket(ticket_id):
+            result = await _process_ticket(ticket_id, on_node=_send_node)
         else:
-            ticket.status = final_state.get("status", "failed")
-        ticket.category = final_state.get("category")
-        ticket.intent = final_state.get("intent")
-        ticket.confidence = final_state.get("confidence")
-        ticket.resolution = final_state.get("resolution")
-        ticket.escalation_reason = final_state.get("escalation_reason")
-        ticket.assignee_group = final_state.get("assignee_group")
-        ticket.priority = final_state.get("priority")
-        ticket.trace_url = trace_url
-        db.commit()
-        log.info("ws.ticket.saved", ticket_id=ticket_id, status=ticket.status)
-
-        if ticket.org_id:
-            _publish_sse(ticket.org_id, {
-                "ticket_id": ticket.id,
-                "status": ticket.status,
-                "category": ticket.category,
-                "resolution": ticket.resolution,
-                "escalation_reason": ticket.escalation_reason,
-                "user_email": owner.email if owner else None,
-                "priority": ticket.priority,
-                "assignee_group": ticket.assignee_group,
-            })
-
-        # Notify the owner when their ticket is resolved.
-        # Escalated tickets are notified directly from escalation_node (Fix 1)
-        # to keep notification logic self-contained in each node.
-        if ticket.status == "resolved" and owner:
-            asyncio.get_running_loop().run_in_executor(
-                None,
-                send_ticket_notification,
-                owner.email,
-                ticket_id,
-                ticket.status,
-                ticket.resolution,
-                ticket.escalation_reason,
-            )
+            result = await _observe_ticket(ticket_id, websocket)
 
         try:
-            await asyncio.sleep(0.5)
-            await websocket.send_json({
-                "node": "graph",
-                "status": "complete",
-                "resolution": final_state.get("resolution"),
-                "trace_url": trace_url,
-            })
-            log.info("ws.complete", ticket_id=ticket_id)
+            await asyncio.sleep(0.3)
+            if result.get("status") == "failed":
+                await websocket.send_json(
+                    {"error": "An internal error occurred.", "code": "WS_PROCESSING_FAILED"}
+                )
+            else:
+                await websocket.send_json({
+                    "node": "graph",
+                    "status": "complete",
+                    "resolution": result.get("resolution"),
+                    "trace_url": result.get("trace_url"),
+                })
+            log.info("ws.complete", ticket_id=ticket_id, status=result.get("status"))
         except (WebSocketDisconnect, RuntimeError):
             log.info("ws.complete.client_gone", ticket_id=ticket_id)
 

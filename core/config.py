@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     embed_model: str = "all-MiniLM-L6-v2"
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # ── Agent routing ─────────────────────────────────────────────────────
+    # Tickets whose triage/retrieval confidence falls below this never reach an
+    # enterprise API — the action node escalates them to a human instead. Kept
+    # in sync with the graph's post-action escalation router.
+    escalation_confidence_threshold: float = 0.6
+
     # ── Auth ──────────────────────────────────────────────────────────────
     token_expire_minutes: int = 480
 

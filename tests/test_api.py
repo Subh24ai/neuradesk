@@ -768,7 +768,7 @@ class TestAdminSSE:
 
         # Patch _sse_event_stream with a finite one-shot generator so test_client.get()
         # returns cleanly instead of blocking forever on an infinite stream.
-        async def _one_ping(org_id: str, q: object):
+        async def _one_ping(org_id: str, start_after_id: int):
             yield "event: ping\ndata: {}\n\n"
 
         with patch("api.admin._sse_event_stream", side_effect=_one_ping):
@@ -777,6 +777,34 @@ class TestAdminSSE:
         assert r.status_code == 200
         assert "text/event-stream" in r.headers["content-type"]
         assert b"ping" in r.content
+
+
+class TestOtpLockout:
+    """OTP brute-force lockout on /auth/verify-otp."""
+
+    def test_otp_locks_after_max_attempts(self, test_client) -> None:
+        """Five wrong OTP guesses invalidate the code; the sixth returns 429 OTP_LOCKED."""
+        with patch("api.auth.send_otp_email") as mock_email:
+            r = test_client.post("/auth/register", json={
+                "email": "lockout@acme.ai", "password": "password123",
+                "first_name": "Lock", "last_name": "Out", "org_name": "Lockout Org",
+            })
+            assert r.status_code == 201
+            real_otp = mock_email.call_args[0][1]
+
+        wrong = "000000" if real_otp != "000000" else "111111"
+        for _ in range(5):
+            rr = test_client.post("/auth/verify-otp", json={"email": "lockout@acme.ai", "otp": wrong})
+            assert rr.status_code == 400
+
+        # Sixth attempt → locked.
+        rr = test_client.post("/auth/verify-otp", json={"email": "lockout@acme.ai", "otp": wrong})
+        assert rr.status_code == 429
+        assert rr.json()["detail"]["code"] == "OTP_LOCKED"
+
+        # The code is now cleared — even the correct OTP no longer verifies.
+        rr = test_client.post("/auth/verify-otp", json={"email": "lockout@acme.ai", "otp": real_otp})
+        assert rr.status_code == 400
 
 
 class TestHealth:

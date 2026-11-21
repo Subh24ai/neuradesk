@@ -545,7 +545,9 @@ export default function App() {
     let cancelled = false
     async function checkHealth() {
       try {
-        const r = await fetch('/health')
+        // /health/deep verifies DB + RAG index + LLM provider config, so the
+        // "agents online" badge reflects real readiness, not just process liveness.
+        const r = await fetch('/health/deep')
         if (!cancelled) setAgentsOnline(r.ok)
       } catch {
         if (!cancelled) setAgentsOnline(false)

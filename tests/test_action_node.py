@@ -178,9 +178,11 @@ class TestActionNode:
 
     @pytest.mark.asyncio
     async def test_username_substituted_in_resolution(self) -> None:
-        """{username} in resolution_template is replaced with the extracted entity."""
+        """{username} in resolution_template is replaced with the AUTHENTICATED user."""
+        # Authenticated submitter is jdoe@corp.com; no other user is named.
         state = _base_state(
             intent="password_reset",
+            user_id="jdoe@corp.com",
             entities={"username": "jdoe@corp.com"},
             resolution_template="Reset complete for {username}.",
         )
@@ -193,3 +195,50 @@ class TestActionNode:
 
         assert "jdoe@corp.com" in result["resolution"]
         assert "{username}" not in result["resolution"]
+
+    @pytest.mark.asyncio
+    async def test_action_targets_authenticated_user_not_free_text(self) -> None:
+        """The enterprise payload user_id is the JWT identity, never a text-named self-match."""
+        # Submitter names their OWN email in the text — payload must use user_id.
+        state = _base_state(
+            intent="password_reset",
+            user_id="alice@corp.com",
+            entities={"username": "alice@corp.com"},
+        )
+
+        with patch(
+            "agents.action_node._post_enterprise",
+            return_value=_api_success("reset-password"),
+        ) as mock_post:
+            result = await action_node(state)
+
+        payload = mock_post.call_args[0][1]
+        assert payload["user_id"] == "alice@corp.com"
+        assert result["status"] == "resolved"
+
+    @pytest.mark.asyncio
+    async def test_third_party_target_escalates_without_api_call(self) -> None:
+        """A ticket naming a DIFFERENT user escalates and makes no API call (authz gate)."""
+        state = _base_state(
+            intent="password_reset",
+            user_id="alice@corp.com",
+            entities={"username": "victim@corp.com"},  # someone else
+        )
+
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = await action_node(state)
+
+        mock_post.assert_not_called()
+        assert result["status"] == "escalated"
+        assert "another user" in result["escalation_reason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_low_confidence_escalates_before_api_call(self) -> None:
+        """Low confidence escalates before any enterprise call (injection/empty-KB safety)."""
+        state = _base_state(intent="password_reset", confidence=0.3)
+
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = await action_node(state)
+
+        mock_post.assert_not_called()
+        assert result["status"] == "escalated"

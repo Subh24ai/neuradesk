@@ -125,7 +125,9 @@ def _extract_entities(text: str) -> dict[str, str]:
 
     text_lower = text.lower()
     for sw in sorted(_KNOWN_SOFTWARE):  # sorted for deterministic first-match
-        if sw in text_lower:
+        # Word-boundary match so "word" does not match inside "password" and
+        # "teams" does not match inside "teamsters".
+        if re.search(rf"\b{re.escape(sw)}\b", text_lower):
             entities["software"] = sw
             break
 
@@ -173,6 +175,27 @@ def intake_node(state: TicketState) -> TicketState:
     raw_text: str = state.get("raw_text") or ""
     raw_image_b64: Optional[str] = state.get("raw_image_b64")
     extracted_text: Optional[str] = None
+
+    # ── Resume short-circuit ───────────────────────────────────────────────────
+    # When the ticket was already triaged (e.g. POST /confirm-action replays the
+    # graph to execute a confirmed destructive action), re-classifying with the
+    # LLM is both wasteful and unsafe: a non-deterministic re-triage could
+    # execute a *different* action than the human authorized. Preserve the prior
+    # classification and only re-derive the deterministic, regex-based fields.
+    if state.get("category") and state.get("intent"):
+        resume_text: str = state.get("extracted_text") or raw_text
+        updates = {
+            "created_at": state.get("created_at") or datetime.now(timezone.utc),
+            "entities": _extract_entities(resume_text),
+            "priority": state.get("priority") or _assign_priority(state["category"], resume_text),
+            "status": "retrieving",
+        }
+        log.info(
+            "intake_node.resume",
+            ticket_id=state.get("ticket_id"),
+            category=state.get("category"),
+        )
+        return {**state, **updates}  # type: ignore[return-value]
 
     # ── Vision extraction ──────────────────────────────────────────────────────
     if channel == "image" and raw_image_b64:

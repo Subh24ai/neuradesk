@@ -37,7 +37,7 @@ def escalation_node(state: TicketState) -> TicketState:
         reason = "Category could not be determined."
     elif confidence < 0.6:
         reason = f"Triage confidence too low ({confidence:.2f} < 0.60)."
-    elif error and "confirmation" in error.lower():
+    elif error and "confirm" in error.lower():
         reason = "Destructive action awaiting human confirmation."
     elif error:
         reason = f"Action node error: {error}"

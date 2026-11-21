@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-202%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-209%20passing-brightgreen)](tests/)
 
 ## Live Demo
 - **App**: https://neuradesk-112430812621.us-central1.run.app
@@ -33,7 +33,7 @@ graph TD
     GATE -->|cancelled| G
 
     D -->|resolved| E([Ticket resolved<br/>WebSocket · LangSmith trace])
-    D -->|low confidence · unknown · API error| F[Escalation Agent]
+    D -->|low confidence · unknown · cross-user request · API error| F[Escalation Agent]
     F -->|structured handoff| G([Human queue<br/>email · Slack])
 
     C -.->|A2A HTTP/SSE| EXT1([External agent])
@@ -73,12 +73,13 @@ graph TD
 - ✅ DSPy-optimized ticket classifier with offline prompt compilation
 - ✅ Multimodal input — plain text and base-64 encoded screenshots
 - ✅ A2A protocol endpoint on the Knowledge Agent (agent-to-agent interop)
-- ✅ Production safety — explicit confirmation gate blocks all destructive API calls
+- ✅ Production safety — destructive actions gated behind explicit confirmation; **every** enterprise action targets only the authenticated submitter (identity comes from the JWT, never from free-text in the ticket), and cross-user requests escalate to a human
+- ✅ Pre-action safety gate — low-confidence, injected, or off-topic tickets escalate **before** any enterprise API call, never after
 - ✅ Auto-escalation with complete agent state forwarded to the human queue
 - ✅ LangSmith tracing on every node — no silent agent execution
-- ✅ JWT auth + session management (GET /auth/sessions, remote revocation), JSON-lines audit log, structured errors
+- ✅ JWT auth + session management (GET /auth/sessions, remote revocation), OTP brute-force lockout, JSON-lines audit log, structured errors
 - ✅ RAGAS evaluation suite with CI enforcement on faithfulness and answer relevance
-- ✅ Prompt injection guard — detects `system:`, role-override, and jailbreak patterns; caps confidence to 0.3 so adversarial tickets escalate safely
+- ✅ Prompt injection guard — detects `system:`, role-override, and jailbreak patterns; caps confidence to 0.3, which the pre-action gate converts into a safe escalation before any action runs
 
 ## Quickstart
 
@@ -92,8 +93,12 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip && pip install -e ".[dev]"
 
 cp .env.example .env
-# Fill in: GROQ_API_KEY, ENTERPRISE_API_SECRET, API_SECRET_KEY, A2A_API_KEY
+# Required: GROQ_API_KEY, ENTERPRISE_API_SECRET, API_SECRET_KEY
+# Optional: A2A_API_KEY (only needed to expose the agent-to-agent endpoints)
 ```
+
+> New to the codebase? See **[DEVELOPMENT.md](DEVELOPMENT.md)** for the full dev
+> workflow, architecture internals, testing, and database migrations.
 
 **Full stack with Docker (recommended):**
 ```bash
@@ -135,7 +140,7 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 202 tests
+pytest tests/ -v          # 209 tests
 ```
 
 **Run the load test:**
@@ -181,11 +186,12 @@ neuradesk/
 | `GET` | `/tickets/` | JWT | Last 20 tickets for the authenticated user |
 | `GET` | `/tickets/{id}` | JWT | Full ticket state by ID |
 | `WS` | `/ws/{ticket_id}` | — | Stream per-node status events in real time |
-| `POST` | `/tickets/{id}/confirm-action` | JWT | Confirm a destructive action awaiting authorization |
+| `POST` | `/tickets/{id}/confirm-action` | JWT | Execute a confirmed destructive action — resumes from the original triage (never re-classifies) |
 | `POST` | `/tickets/{id}/cancel` | JWT | Cancel a destructive action (routes to escalation) |
 | `GET` | `/auth/sessions` | JWT | List active sessions for the current user |
 | `DELETE` | `/auth/sessions/{jti}` | JWT | Revoke a session by JTI (remote sign-out) |
-| `GET` | `/admin/stream` | JWT (query) | SSE stream of resolved/escalated ticket events (admin) |
+| `GET` | `/admin/stream` | JWT (query) | SSE stream of ticket events (admin) — durable, DB-backed, correct across multiple workers |
+| `GET` | `/health/deep` | — | Readiness probe — verifies DB, RAG index, and LLM provider config |
 | `GET` | `/.well-known/agent.json` | — | A2A Agent Card |
 | `POST` | `/tasks/send` | — | A2A synchronous knowledge-retrieval task |
 
@@ -292,6 +298,20 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 | ✅ Docker inter-container env var mismatch | `ENTERPRISE_API_URL` → `ENTERPRISE_API_BASE_URL` across codebase |
 | ✅ GCP deployment live | Cloud Run URL — see Live Demo above |
 
+### Fixed in v1.3 (security & correctness hardening)
+
+| Issue | Fix |
+|---|---|
+| ✅ Action target set from free-text email (broken authorization) | Enterprise `user_id` always comes from the JWT; cross-user requests escalate to a human |
+| ✅ Guardrails ran *after* the irreversible action | `action_node` escalates on low confidence / injection **before** any API call |
+| ✅ `confirm-action` re-classified the ticket (could execute a different op) | Replays from the original triage — `intake_node` short-circuits, no LLM re-triage |
+| ✅ Docker image baked in `.env`, DB, and PII backups | `.dockerignore` added (tracked), mirrors `.gcloudignore` |
+| ✅ Admin SSE broke silently with >1 web worker | Durable `admin_events` table; every stream polls it — correct across all workers |
+| ✅ OTP brute-forceable (no lockout) | Per-account attempt counter locks the code after 5 wrong guesses; constant-time compare |
+| ✅ Software entity matched substrings (`word` inside `password`) | Word-boundary matching |
+| ✅ App refused to boot without `A2A_API_KEY` | Key is now checked per-request; unconfigured A2A endpoints return 503 |
+| ✅ Misc | Constant-time secret compares, `/health/deep` LLM check wired to the UI status badge, retrieval query cleanups |
+
 ### Remaining
 
 - Mock enterprise APIs — `services/enterprise_api.py` stubs only; no real ITSM/HR integration
@@ -299,6 +319,8 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 - Audit log: RotatingFileHandler, 10 MB max, 5 backups (~60 MB cap)
 - RAG answer relevancy 0.44 — corpus too small; improves with more KB documents
 - `SUPPORT_EMAIL` / SMTP must be configured manually per org
+- Cross-user / delegated actions escalate to a human — no admin "act on behalf of" role yet
+- Admin SSE passes the JWT as a query param (EventSource protocol limitation)
 
 ## Roadmap
 
@@ -308,6 +330,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 - ✅ **Week 4** — React frontend ✓, GCP deployment ✓, load test ✓ (P50 4.28s, 100/100 success)
 - ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green
 - ✅ **v1.2 security** — prompt injection guard, RAG threshold fix, real session management, Docker env fix, GCP Cloud Run deploy — 202 tests green
+- ✅ **v1.3 hardening** — authorization fix (JWT-only action identity), pre-action safety gate, confirm-action resume, cross-worker admin SSE, OTP lockout, `.dockerignore`, lazy A2A key — 209 tests green
 
 ---
 

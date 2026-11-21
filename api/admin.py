@@ -14,6 +14,7 @@ from core.config import get_settings
 _cfg = get_settings()
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from api.auth import _decode_token, get_current_user
@@ -44,24 +45,35 @@ log = structlog.get_logger(__name__)
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ── SSE state ─────────────────────────────────────────────────────────────────
+# Events are persisted to the admin_events table and polled by each SSE
+# connection, so the dashboard feed is correct across multiple web workers
+# (in-process queues would only reach admins on the same worker).
 
-_admin_sse_queues: dict[str, list[asyncio.Queue[str]]] = {}
+_SSE_POLL_SECONDS: float = 1.5
+# Delete delivered events older than this on publish so the table stays small.
+_SSE_EVENT_TTL_SECONDS: int = 3600
 
 
 def _publish_sse(org_id: str, event_data: dict) -> None:
-    """Push a ticket event to all connected admin SSE clients for org_id.
+    """Persist a ticket event for org_id so every admin SSE connection sees it.
 
-    Uses put_nowait so a slow admin client never blocks the ticket creation path.
+    Opens a short-lived session and never raises — ticket processing must not
+    fail because the dashboard feed is unavailable.
     """
-    queues = _admin_sse_queues.get(org_id)
-    if not queues:
-        return
-    payload = f"data: {json.dumps(event_data)}\n\n"
-    for q in list(queues):  # snapshot — a disconnect finalizer may mutate the list concurrently
-        try:
-            q.put_nowait(payload)
-        except asyncio.QueueFull:
-            log.warning("admin.sse.queue_full", org_id=org_id)
+    from api.models import AdminEventModel, SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.add(AdminEventModel(org_id=org_id, payload=json.dumps(event_data)))
+        # Opportunistic prune of old, already-delivered events.
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=_SSE_EVENT_TTL_SECONDS)
+        db.query(AdminEventModel).filter(AdminEventModel.created_at < cutoff).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.warning("admin.sse.publish_failed", org_id=org_id)
+    finally:
+        db.close()
 
 
 def _require_admin(user: UserModel) -> None:
@@ -560,21 +572,44 @@ def revoke_invite(
 # ── Admin SSE stream ──────────────────────────────────────────────────────────
 
 
-async def _sse_event_stream(org_id: str, q: "asyncio.Queue[str]") -> AsyncGenerator[str, None]:
-    """Infinite SSE generator for one admin client. Extracted for testability."""
-    queues = _admin_sse_queues.setdefault(org_id, [])
-    queues.append(q)
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-                yield event
-            except asyncio.TimeoutError:
+async def _sse_event_stream(org_id: str, start_after_id: int) -> AsyncGenerator[str, None]:
+    """Poll admin_events for org_id and yield new rows as SSE data frames.
+
+    Starts after ``start_after_id`` so a reconnecting client doesn't replay
+    events it already saw. Emits a keepalive ping during idle periods. Works
+    across any number of web workers because the source of truth is the DB.
+    """
+    from api.models import AdminEventModel, SessionLocal
+
+    last_id = start_after_id
+    idle = 0.0
+    while True:
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(AdminEventModel)
+                .filter(AdminEventModel.org_id == org_id, AdminEventModel.id > last_id)
+                .order_by(AdminEventModel.id.asc())
+                .all()
+            )
+            payloads = [(r.id, r.payload) for r in rows]
+        except Exception:
+            payloads = []
+        finally:
+            db.close()
+
+        if payloads:
+            idle = 0.0
+            for ev_id, payload in payloads:
+                last_id = ev_id
+                yield f"data: {payload}\n\n"
+        else:
+            idle += _SSE_POLL_SECONDS
+            if idle >= 25.0:  # keepalive roughly every 25s of silence
+                idle = 0.0
                 yield "event: ping\ndata: {}\n\n"
-    finally:
-        queues.remove(q)
-        if not queues:
-            del _admin_sse_queues[org_id]
+
+        await asyncio.sleep(_SSE_POLL_SECONDS)
 
 
 @admin_router.get(
@@ -608,10 +643,17 @@ async def admin_stream(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "NO_ORG"})
     org_id: str = user.org_id
 
-    q: asyncio.Queue[str] = asyncio.Queue(maxsize=_cfg.admin_sse_queue_size)
+    # Only stream events created from now on — skip the backlog already persisted.
+    from api.models import AdminEventModel
+    start_after_id: int = (
+        db.query(func.max(AdminEventModel.id))
+        .filter(AdminEventModel.org_id == org_id)
+        .scalar()
+        or 0
+    )
 
     return StreamingResponse(
-        _sse_event_stream(org_id, q),
+        _sse_event_stream(org_id, start_after_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

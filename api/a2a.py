@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -34,12 +35,9 @@ _cfg = get_settings()
 router = APIRouter(tags=["a2a"])
 
 # ── A2A authentication ─────────────────────────────────────────────────────────
-
-_A2A_API_KEY: str = os.environ.get("A2A_API_KEY", "")
-if not _A2A_API_KEY:
-    raise RuntimeError(
-        "A2A_API_KEY env var is not set — refusing to start with A2A task endpoints unauthenticated"
-    )
+# The key is checked per-request (not at import) so the core ticketing app boots
+# even when the optional A2A feature is unconfigured. An unconfigured key returns
+# 503 on the task endpoints rather than crashing startup.
 
 _A2A_QUERY_TIMEOUT: int = _cfg.a2a_query_timeout
 _A2A_MAX_CONCURRENT_SUBSCRIPTIONS: int = _cfg.a2a_max_concurrent_subscriptions
@@ -51,8 +49,14 @@ _a2a_bearer = HTTPBearer(auto_error=True)
 def get_a2a_key(
     credentials: HTTPAuthorizationCredentials = Depends(_a2a_bearer),
 ) -> None:
-    """Validate the A2A Bearer token; raise 401 on any mismatch."""
-    if credentials.credentials != _A2A_API_KEY:
+    """Validate the A2A Bearer token (constant-time); 503 if unconfigured, 401 on mismatch."""
+    configured: str = os.environ.get("A2A_API_KEY", "")
+    if not configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "A2A endpoint is not configured", "code": "A2A_NOT_CONFIGURED"},
+        )
+    if not secrets.compare_digest(credentials.credentials, configured):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",

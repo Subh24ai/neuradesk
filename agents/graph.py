@@ -11,6 +11,7 @@ The conditional edge after action_node routes to escalation_node when:
 
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import structlog
@@ -115,7 +116,7 @@ def build_initial_state(
     return {  # type: ignore[return-value]
         "ticket_id": str(uuid.uuid4()),
         "user_id": user_id,
-        "created_at": None,
+        "created_at": datetime.now(timezone.utc),
         "trace_id": str(uuid.uuid4()),
         "channel": channel,  # type: ignore[arg-type]
         "raw_text": raw_text,

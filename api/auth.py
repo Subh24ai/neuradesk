@@ -62,6 +62,8 @@ _SECRET_KEY: str = os.environ.get("API_SECRET_KEY", "")
 _ALGORITHM = "HS256"
 _TOKEN_EXPIRE_MINUTES: int = get_settings().token_expire_minutes
 _OTP_EXPIRE_MINUTES = 10
+# Wrong-OTP guesses allowed for one code before it is invalidated (anti-brute-force).
+_MAX_OTP_ATTEMPTS = 5
 
 def _smtp_configured() -> bool:
     """Return True if all three SMTP env vars are set."""
@@ -430,12 +432,25 @@ def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(ge
             detail={"error": "OTP has expired — request a new one", "code": "OTP_EXPIRED"},
         )
 
-    if user.otp != req.otp:
+    # Lock the code out after too many wrong guesses (brute-force protection).
+    if (user.otp_attempts or 0) >= _MAX_OTP_ATTEMPTS:
+        user.otp = None
+        user.otp_expires_at = None
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "Too many incorrect attempts — request a new code", "code": "OTP_LOCKED"},
+        )
+
+    if not secrets.compare_digest(user.otp, req.otp):
+        user.otp_attempts = (user.otp_attempts or 0) + 1
+        db.commit()
         raise _invalid
 
     user.is_verified = True
     user.otp = None
     user.otp_expires_at = None
+    user.otp_attempts = 0
     db.commit()
 
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
@@ -472,6 +487,7 @@ def resend_otp(request: Request, req: OtpResendRequest, db: Session = Depends(ge
     otp = generate_otp()
     user.otp = otp
     user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
+    user.otp_attempts = 0
     db.commit()
 
     try:
@@ -504,6 +520,7 @@ def forgot_password(request: Request, req: ForgotPasswordRequest, db: Session = 
         otp = generate_otp()
         user.otp = otp
         user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
+        user.otp_attempts = 0
         db.commit()
         try:
             send_otp_email(req.email, otp)
@@ -536,13 +553,26 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
         expires = expires.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires:
         raise invalid
-    if user.otp != req.otp:
+
+    if (user.otp_attempts or 0) >= _MAX_OTP_ATTEMPTS:
+        user.otp = None
+        user.otp_expires_at = None
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "Too many incorrect attempts — request a new code", "code": "OTP_LOCKED"},
+        )
+
+    if not secrets.compare_digest(user.otp, req.otp):
+        user.otp_attempts = (user.otp_attempts or 0) + 1
+        db.commit()
         raise invalid
 
     user.hashed_password = hash_password(req.new_password)
     user.is_verified = True
     user.otp = None
     user.otp_expires_at = None
+    user.otp_attempts = 0
     db.commit()
 
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None

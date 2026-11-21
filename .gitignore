@@ -43,7 +43,8 @@ services/audit.jsonl
 memory/
 
 # Docker
-.dockerignore
+# NOTE: .dockerignore is intentionally tracked — it must ship in the repo so
+# every build context excludes secrets/PII. Do NOT add it back to this ignore list.
 
 # macOS
 .DS_Store

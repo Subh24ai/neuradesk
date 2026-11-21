@@ -20,6 +20,9 @@ log = structlog.get_logger(__name__)
 # Force confidence low so the escalation router picks it up.
 _RAG_SCORE_THRESHOLD: float = _cfg.rag_score_threshold
 
+# Number of top-ranked chunks fed to the LLM when generating the resolution.
+_GROUNDING_CHUNKS: int = 3
+
 _RESOLUTION_SYSTEM_PROMPT: str = (
     "You are an IT/HR support assistant. "
     "Given the following knowledge base excerpt, write a "
@@ -47,7 +50,9 @@ def knowledge_node(state: TicketState) -> TicketState:
     ticket_text: str = (
         state.get("extracted_text") or state.get("raw_text") or ""
     )[:300]
-    query: str = f"{category} {ticket_text}"
+    # Prepend the category only when it carries signal — "unknown" is a routing
+    # label, not a search term, and would otherwise pollute the retrieval query.
+    query: str = ticket_text if category == "unknown" else f"{category} {ticket_text}"
 
     log.info("knowledge_node.start", ticket_id=state.get("ticket_id"), category=category)
 
@@ -89,9 +94,12 @@ def knowledge_node(state: TicketState) -> TicketState:
         }  # type: ignore[return-value]
     try:
         llm = get_llm()
+        # Ground the resolution on the top-ranked chunks (not just the single
+        # best) so multi-step answers aren't truncated to one paragraph.
+        context: str = "\n\n".join(c["content"] for c in chunks[:_GROUNDING_CHUNKS])
         response = llm.invoke([
             SystemMessage(content=_RESOLUTION_SYSTEM_PROMPT),
-            HumanMessage(content=top_chunk["content"]),
+            HumanMessage(content=context),
         ])
         resolution: str = str(response.content).strip()
     except Exception as exc:

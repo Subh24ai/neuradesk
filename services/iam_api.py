@@ -15,6 +15,7 @@ appended to the audit log via services.audit_log.log_audit.
 """
 
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -44,7 +45,7 @@ def verify_token(
         raise RuntimeError(
             "ENTERPRISE_API_SECRET is not set. Set it in .env before starting the service."
         )
-    if credentials.credentials != _SECRET:
+    if not secrets.compare_digest(credentials.credentials, _SECRET):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Invalid API token", "code": "TOKEN_INVALID"},

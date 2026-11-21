@@ -113,15 +113,20 @@ class TestActionNode:
         assert "jdoe@corp.com" in result["resolution"]
 
     @pytest.mark.asyncio
-    async def test_extracted_entity_overrides_user_id_fallback(self) -> None:
-        """Real NLP-extracted username overrides the user_id fallback."""
+    async def test_ticket_naming_another_user_escalates(self) -> None:
+        """A ticket naming a different identity than the submitter escalates (authz gate).
+
+        Previously the text-extracted username overrode the authenticated user as
+        the action target — a broken-authorization bug. The agent now refuses to
+        auto-act on another account and routes it to a human.
+        """
         state = _base_state(
             user_id="jdoe@corp.com",
-            entities={"username": "john.doe"},
+            entities={"username": "someone.else@corp.com"},
         )
         result = await action_node(state)
-        assert "john.doe" in result["resolution"]
-        assert "jdoe@corp.com" not in result["resolution"]
+        assert result["status"] == "escalated"
+        assert "another user" in result["escalation_reason"].lower()
 
     @pytest.mark.asyncio
     async def test_non_destructive_intent_resolves_without_confirmation(self) -> None:

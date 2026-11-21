@@ -44,6 +44,9 @@ _PRIORITY_TO_SEVERITY: dict[str, str] = {
 
 _RETRY_DELAYS: list[float] = _cfg.action_retry_delays
 
+# Below this confidence the action node escalates instead of calling any API.
+_CONFIDENCE_THRESHOLD: float = _cfg.escalation_confidence_threshold
+
 
 @traceable(name="_post_enterprise", run_type="tool", metadata={"layer": "enterprise_api"})
 async def _post_enterprise(
@@ -82,22 +85,44 @@ async def _post_enterprise(
     raise last_exc  # type: ignore[misc]
 
 
+def _mentioned_other_user(state: TicketState) -> str | None:
+    """Return a third-party identity named in the ticket, or None.
+
+    The intake node regex-extracts the first email in the ticket text into
+    ``entities["username"]``.  That value is an *untrusted hint* — it must never
+    become the action target (doing so lets any employee act on another account
+    by naming it in free text).  This helper reports when the ticket names an
+    identity that differs from the authenticated submitter so the caller can
+    route it to a human instead of auto-acting.
+    """
+    authenticated: str = (state.get("user_id") or "").strip().lower()
+    mentioned: str = str((state.get("entities") or {}).get("username") or "").strip().lower()
+    if not mentioned or mentioned in ("unknown", ""):
+        return None
+    if mentioned == authenticated:
+        return None
+    return mentioned
+
+
 def _build_payload(
     intent: str,
     state: TicketState,
-    fmt: dict[str, str],
 ) -> dict[str, Any]:
     """Construct the request body for the enterprise API call.
+
+    The target ``user_id`` is always the authenticated submitter
+    (``state["user_id"]``) — never a value parsed from the ticket text.
 
     Args:
         intent: Classified ticket intent (one of _ENDPOINT_MAP keys).
         state: Full ticket state.
-        fmt: Pre-built format context dict with "username" already resolved.
 
     Returns:
         Dict ready to be JSON-serialised into the API request body.
     """
-    user_id: str = fmt.get("username") or state.get("user_id") or "unknown"
+    # The action target is ALWAYS the authenticated submitter. The username in
+    # fmt is derived from state["user_id"] (the JWT identity), never from text.
+    user_id: str = state.get("user_id") or "unknown"
     entities: dict[str, str] = state.get("entities") or {}
     raw: str = (state.get("extracted_text") or state.get("raw_text") or "")[:500]
 
@@ -184,7 +209,45 @@ async def action_node(state: TicketState) -> TicketState:
             "status": "escalated",
         }  # type: ignore[return-value]
 
-    # 2. Destructive gate — block until caller sends action_confirmed=True.
+    # 2. Confidence gate — never touch an enterprise API on a low-confidence
+    #    triage/retrieval (also catches prompt-injection, which caps confidence).
+    #    This MUST run before the API call, not only in the post-action router.
+    confidence = state.get("confidence")
+    if confidence is not None and confidence < _CONFIDENCE_THRESHOLD:
+        log.warning(
+            "action_node.low_confidence_escalate",
+            ticket_id=state.get("ticket_id"),
+            confidence=confidence,
+        )
+        return {
+            **state,
+            "escalated": True,
+            "escalation_reason": f"Low triage/retrieval confidence ({confidence:.2f}) — routed to a human.",
+            "status": "escalated",
+        }  # type: ignore[return-value]
+
+    # 3. Authorization gate — a ticket that names a *different* identity than the
+    #    authenticated submitter is a cross-user request. These require human /
+    #    delegated authority; the agent never auto-acts on another account.
+    other_user = _mentioned_other_user(state)
+    if other_user is not None:
+        log.warning(
+            "action_node.third_party_target",
+            ticket_id=state.get("ticket_id"),
+            submitter=state.get("user_id"),
+            mentioned=other_user,
+        )
+        return {
+            **state,
+            "escalated": True,
+            "escalation_reason": (
+                "Request names another user's account — a human must authorize "
+                "cross-user actions."
+            ),
+            "status": "escalated",
+        }  # type: ignore[return-value]
+
+    # 4. Destructive gate — block until caller sends action_confirmed=True.
     if intent in _DESTRUCTIVE_INTENTS and not state.get("action_confirmed"):
         log.warning("action_node.awaiting_confirmation", intent=intent)
         return {
@@ -192,29 +255,32 @@ async def action_node(state: TicketState) -> TicketState:
             "action_confirmed": False,
             "status": "awaiting_confirmation",
             "escalation_reason": f"Explicit confirmation required to execute '{intent}' on your account.",
-            "error": f"Confirm required for '{intent}'",
+            "error": f"Confirmation required for '{intent}'",
         }  # type: ignore[return-value]
 
-    # 3. Build username substitution context for the resolution template.
-    user_fallback: str = state.get("user_id") or "unknown"
-    fmt: dict[str, str] = {"user_id": user_fallback, "username": user_fallback}
+    # 5. Build substitution context for the resolution template. "username" is
+    #    the authenticated submitter only — free-text entities (software, date)
+    #    are allowed through, but they can never override identity.
+    authenticated_user: str = state.get("user_id") or "unknown"
+    fmt: dict[str, str] = {"user_id": authenticated_user, "username": authenticated_user}
     for k, v in entities.items():
-        if k == "username" and v in (None, "unknown", ""):
-            continue
+        if k == "username":
+            continue  # identity is authoritative — never templated from text
         fmt[k] = str(v) if v is not None else "unknown"
 
     resolution: str = (
         state.get("resolution_template") or "Action completed."
     ).format(**fmt)
 
-    # 4. Call the enterprise API for the mapped intent.
+    # 6. Call the enterprise API for the mapped intent.
     endpoint: str | None = _ENDPOINT_MAP.get(intent)
+    action_result: dict[str, Any] = {}
 
     try:
         if endpoint:
             base_url = state.get("org_api_url") or os.getenv("ENTERPRISE_API_BASE_URL", "http://localhost:8001")
             secret = os.getenv("ENTERPRISE_API_SECRET", "")
-            payload = _build_payload(intent, state, fmt)
+            payload = _build_payload(intent, state)
             action_result: dict[str, Any] = await _post_enterprise(
                 endpoint, payload, base_url, secret
             )

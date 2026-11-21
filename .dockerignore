@@ -1,0 +1,55 @@
+# Docker build-context excludes — keep secrets, PII, and bulk out of the image.
+# Mirrors .gcloudignore (which only covers GCP source uploads, not docker build).
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# Databases & runtime artifacts
+*.db
+neuradesk.db
+services/audit.jsonl
+faiss_reload.sentinel
+*.log
+
+# Local PII/data backups — never bake into an image
+registration_wipe_backup_*.json
+
+# Python envs & caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# RAG binary indexes (rebuilt on startup)
+rag/faiss_index/
+rag/*.index
+rag/*.pkl
+
+# Version control & meta
+.git
+.gitignore
+.github/
+
+# Claude Code session memory — not app source
+memory/
+CLAUDE.md
+interview.md
+
+# Frontend node deps / build (frontend is built in its own stage/image)
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
