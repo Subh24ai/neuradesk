@@ -72,6 +72,11 @@ class TestRouting:
         state = _base_state(confidence=0.6, status="resolved")
         assert _should_escalate(state) == "__end__"
 
+    def test_resolved_unknown_ticket_routes_to_end(self) -> None:
+        """An 'unknown' ticket that action_node resolved from the KB is not re-escalated."""
+        state = _base_state(category="unknown", status="resolved", confidence=0.9)
+        assert _should_escalate(state) == "__end__"
+
     def test_awaiting_confirmation_routes_to_end(self) -> None:
         """status='awaiting_confirmation' exits the graph without calling escalation_node."""
         state = _base_state(status="awaiting_confirmation", confidence=0.9)

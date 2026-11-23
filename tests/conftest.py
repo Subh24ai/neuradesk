@@ -6,7 +6,13 @@ pick up test values when the modules are first imported by a fixture.
 """
 
 import os
+import tempfile
 
+# The app's module-level SessionLocal (used by the WebSocket handler, background
+# worker and admin SSE publisher) binds to DATABASE_URL at import time. Point it
+# at a throwaway SQLite file so tests can never read or write a developer's real
+# database (and never hang when that database is unavailable).
+os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp(prefix='neuradesk-tests-')}/app.db"
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("ENTERPRISE_API_SECRET", "test-enterprise-secret")
 os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-32chars!!")
@@ -14,6 +20,13 @@ os.environ.setdefault("ENTERPRISE_API_BASE_URL", "http://localhost:8001")
 os.environ.setdefault("A2A_API_KEY", "test-key")
 # Force empty so org creation is unrestricted in tests; monkeypatch overrides as needed.
 os.environ["ORG_CREATION_SECRET"] = ""
+# Keep the suite hermetic: never call the real LLM provider from unit tests, even
+# when a developer's .env holds a working key (it would spend their API quota and
+# make tests rate-limit-dependent). load_dotenv() never overrides a set variable.
+# Live-model checks belong in tests/eval_rag.py, not pytest.
+os.environ["GROQ_API_KEY"] = ""
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
 
 from unittest.mock import patch
 
@@ -25,6 +38,10 @@ from sqlalchemy.orm import sessionmaker
 from api.auth import hash_password
 from api.main import app
 from api.models import Base, OrganizationModel, UserModel, get_db
+from api.models import engine as _app_engine
+
+# Tables for the module-level engine (used outside request-scoped DI).
+Base.metadata.create_all(bind=_app_engine)
 
 # ── Database fixtures ─────────────────────────────────────────────────────────
 

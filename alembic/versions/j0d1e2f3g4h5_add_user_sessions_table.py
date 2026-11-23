@@ -8,6 +8,7 @@ Create Date: 2026-05-30
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "j0d1e2f3g4h5"
@@ -17,7 +18,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    """Create user_sessions table."""
+    """Create user_sessions table (idempotent — create_all may have made it)."""
+    if sa.inspect(op.get_bind()).has_table("user_sessions"):
+        return
     op.create_table(
         "user_sessions",
         sa.Column("jti", sa.String(length=36), primary_key=True),

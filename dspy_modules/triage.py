@@ -278,7 +278,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     lm = dspy.LM(
-        f"groq/{os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}",
+        f"groq/{os.getenv('GROQ_MODEL', 'openai/gpt-oss-20b')}",
         api_key=groq_key,
     )
     dspy.configure(lm=lm)

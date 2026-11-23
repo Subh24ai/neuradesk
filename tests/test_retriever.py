@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from rag.loader import load_documents
+from rag import retriever as retriever_mod
+from rag.loader import _MAX_CHUNK_CHARS, chunk_text, load_documents
 from rag.retriever import HybridRetriever
 
 
@@ -178,3 +179,102 @@ class TestAddDocuments:
         results = r.search("maternity leave request HR form", top_k=3)
         sources = [c["source"] for c in results]
         assert unique_source in sources, f"Injected doc not found in top-3: {sources}"
+
+
+# ── Org-uploaded knowledge (organisations bring their own policies) ───────────
+
+
+_ACME_HANDBOOK = {
+    "title": "Acme Handbook",
+    "content": "\n\n".join(
+        f"Section {i}. General provisions. This section describes scope, definitions, "
+        f"manager responsibilities and the governance process for handbook item {i}."
+        for i in range(1, 13)
+    )
+    + "\n\nSection 13. Annual Leave. Every full-time Acme employee is entitled to 30 days "
+    "of paid annual leave per year. Requests are submitted in BambooHR at least 14 days ahead.",
+}
+_LEAVE_Q = "leave_approval How many days of annual leave do I get and how do I request it?"
+
+
+class TestChunkText:
+    """rag.loader.chunk_text — passage splitting for uploaded documents."""
+
+    def test_empty_text_returns_no_chunks(self) -> None:
+        """Blank input yields no passages."""
+        assert chunk_text("   \n\n ") == []
+
+    def test_one_passage_per_paragraph(self) -> None:
+        """Each paragraph becomes its own focused passage."""
+        chunks = chunk_text(_ACME_HANDBOOK["content"])
+        assert len(chunks) == 13
+        assert "30 days" in chunks[-1]
+
+    def test_heading_is_attached_to_following_paragraph(self) -> None:
+        """A short heading is not dropped — it prefixes the next paragraph."""
+        text = "Annual Leave\n\nEmployees receive thirty days of paid leave each calendar year in total."
+        chunks = chunk_text(text)
+        assert len(chunks) == 1
+        assert chunks[0].startswith("Annual Leave")
+
+    def test_pdf_style_block_is_split_and_lossless(self) -> None:
+        """A long block with no blank lines (typical PDF page) is split on sentences, losing nothing."""
+        sentences = [f"Rule number {i} applies to every employee in the company." for i in range(60)]
+        chunks = chunk_text(" ".join(sentences))
+        assert len(chunks) > 1
+        assert all(len(c) <= _MAX_CHUNK_CHARS for c in chunks)
+        joined = " ".join(chunks)
+        assert all(s in joined for s in sentences)
+
+
+class TestOrgKnowledge:
+    """Org documents are authoritative over the bundled sample policies."""
+
+    def test_org_policy_beats_sample_policy(self, retriever: HybridRetriever) -> None:
+        """An org's own leave rule (deep in a long doc) outranks the bundled sample."""
+        res = retriever.search(_LEAVE_Q, top_k=3, org_chunks=[_ACME_HANDBOOK])
+        assert res[0]["source"] == "org-kb:Acme Handbook"
+        assert "30 days" in res[0]["content"]
+        assert res[0]["score"] >= retriever_mod._cfg.rag_score_threshold
+
+    def test_relevant_org_answer_is_never_mixed_with_samples(self, retriever: HybridRetriever) -> None:
+        """When the org has an answer, no sample passage can contradict it."""
+        res = retriever.search(_LEAVE_Q, top_k=3, org_chunks=[_ACME_HANDBOOK])
+        assert all(c["source"].startswith("org-kb:") for c in res)
+
+    def test_irrelevant_org_docs_escalate_instead_of_using_samples(
+        self, retriever: HybridRetriever, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Org has docs but none match → sub-threshold org results (caller escalates), no samples."""
+        monkeypatch.setattr(retriever_mod._cfg, "kb_sample_fallback", False)
+        menu = {"title": "Cafeteria", "content": "Monday lunch is pasta. Tuesday lunch is tacos with salad."}
+        res = retriever.search("How do I set up the VPN on my laptop?", top_k=3, org_chunks=[menu])
+        assert all(c["source"].startswith("org-kb:") for c in res)
+        assert res[0]["score"] < retriever_mod._cfg.rag_score_threshold
+
+    def test_sample_fallback_when_enabled(
+        self, retriever: HybridRetriever, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With KB_SAMPLE_FALLBACK on, an unmatched org query falls back to the sample KB."""
+        monkeypatch.setattr(retriever_mod._cfg, "kb_sample_fallback", True)
+        menu = {"title": "Cafeteria", "content": "Monday lunch is pasta. Tuesday lunch is tacos with salad."}
+        res = retriever.search("How do I set up the VPN on my laptop?", top_k=3, org_chunks=[menu])
+        assert any(c["source"] == "vpn-setup-runbook.md" for c in res)
+
+    def test_org_without_uploads_uses_sample_kb(self, retriever: HybridRetriever) -> None:
+        """Demo mode: an org with no uploaded docs is served from the bundled samples."""
+        res = retriever.search("How do I set up the VPN?", top_k=2, org_chunks=None)
+        assert res and all(c["source"].endswith(".md") for c in res)
+
+    def test_sample_kb_can_be_disabled(
+        self, retriever: HybridRetriever, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """INCLUDE_SAMPLE_KB=false → no fictional policies are ever served."""
+        monkeypatch.setattr(retriever_mod._cfg, "include_sample_kb", False)
+        assert retriever.search("How do I set up the VPN?", top_k=2, org_chunks=None) == []
+
+    def test_org_documents_do_not_leak_between_calls(self, retriever: HybridRetriever) -> None:
+        """Org docs are per-call only — a later search for another org never sees them."""
+        retriever.search(_LEAVE_Q, top_k=3, org_chunks=[_ACME_HANDBOOK])
+        res = retriever.search(_LEAVE_Q, top_k=5, org_chunks=None)
+        assert not any(c["source"].startswith("org-kb:") for c in res)

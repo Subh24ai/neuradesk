@@ -29,7 +29,11 @@ load_dotenv()
 
 log = structlog.get_logger(__name__)
 
-_SECRET: str = os.environ.get("ENTERPRISE_API_SECRET", "")
+
+
+def _shared_secret() -> str:
+    """Return ENTERPRISE_API_SECRET as currently configured (read per request)."""
+    return os.environ.get("ENTERPRISE_API_SECRET", "")
 _http_bearer = HTTPBearer(auto_error=True)
 
 app = FastAPI(
@@ -49,11 +53,13 @@ def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
 ) -> str:
     """Validate the Bearer token against ENTERPRISE_API_SECRET; raise 401 on mismatch."""
-    if not _SECRET:
-        raise RuntimeError(
-            "ENTERPRISE_API_SECRET is not set. Set it in .env before starting the service."
+    secret = _shared_secret()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "ENTERPRISE_API_SECRET is not configured", "code": "SECRET_NOT_CONFIGURED"},
         )
-    if not secrets.compare_digest(credentials.credentials, _SECRET):
+    if not secrets.compare_digest(credentials.credentials, secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Invalid API token", "code": "TOKEN_INVALID"},

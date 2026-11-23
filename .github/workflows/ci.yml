@@ -17,7 +17,7 @@ jobs:
       API_SECRET_KEY: "test-api-secret-key-32chars!!"
       ENTERPRISE_API_BASE_URL: "http://localhost:8001"
       # GROQ vars used only for the RAGAS eval step (gated below).
-      GROQ_MODEL: "llama-3.3-70b-versatile"
+      GROQ_MODEL: "openai/gpt-oss-20b"
 
     steps:
       - uses: actions/checkout@v4

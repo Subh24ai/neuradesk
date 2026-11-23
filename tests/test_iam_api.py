@@ -156,3 +156,36 @@ class TestAuditLog:
         entry = json.loads(raw_lines[0])
         assert entry["endpoint"] == "/iam/delete-account"
         assert entry["response_status"] == 400
+
+
+def test_secret_read_per_request_not_at_import(monkeypatch) -> None:
+    """Regression: IAM must honour ENTERPRISE_API_SECRET set AFTER import (as load_dotenv does).
+
+    The service used to capture the secret at import time, before enterprise_api
+    ran load_dotenv(), so every IAM call returned 500 when the secret lived in .env.
+    """
+    from fastapi.testclient import TestClient
+
+    from services.enterprise_api import app
+
+    monkeypatch.setenv("ENTERPRISE_API_SECRET", "rotated-after-import")
+    r = TestClient(app).post(
+        "/iam/delete-account",
+        json={"user_id": "u1", "confirm": True},
+        headers={"Authorization": "Bearer rotated-after-import"},
+    )
+    assert r.status_code == 200
+
+
+def test_missing_secret_is_a_clear_503(monkeypatch) -> None:
+    """An unconfigured secret returns a clear 503, not an opaque crash."""
+    from fastapi.testclient import TestClient
+
+    from services.enterprise_api import app
+
+    monkeypatch.setenv("ENTERPRISE_API_SECRET", "")
+    r = TestClient(app).post(
+        "/iam/lock-account", json={"user_id": "u1"}, headers={"Authorization": "Bearer x"}
+    )
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "SECRET_NOT_CONFIGURED"

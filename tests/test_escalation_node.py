@@ -227,3 +227,19 @@ class TestSlackNotifications:
 
         assert result["escalated"] is True
         mock_slack.assert_not_called()
+
+
+def test_upstream_authz_reason_is_preserved() -> None:
+    """The authorization gate's specific reason survives escalation (not 'Escalated by policy.')."""
+    from unittest.mock import patch
+
+    from agents.escalation_node import escalation_node
+
+    state = {
+        "ticket_id": "t-authz", "category": "password_reset", "confidence": 0.97,
+        "priority": "MEDIUM", "error": None, "status": "escalated",
+        "escalation_reason": "Request names another user's account — a human must authorize cross-user actions.",
+    }
+    with patch("agents.escalation_node._send_escalation_notifications"):
+        result = escalation_node(state)  # type: ignore[arg-type]
+    assert "another user" in result["escalation_reason"]

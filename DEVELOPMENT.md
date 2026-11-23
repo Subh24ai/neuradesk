@@ -63,15 +63,16 @@ docker-compose --profile frontend up frontend   # → localhost:3000
 ENTERPRISE_API_SECRET=local-dev-secret-123 \
   uvicorn services.enterprise_api:app --port 8001
 
-# Terminal 2 — main backend
+# Terminal 2 — main backend (migrate first; safe to run every time)
+python -m scripts.migrate_db
 uvicorn api.main:app --reload --port 8000
 
 # Terminal 3 — frontend (Vite dev server, proxies /api, /auth, /ws … to :8000)
 cd frontend && npm install && npm run dev
 ```
 
-With no `DATABASE_URL`, the backend uses `sqlite:///./neuradesk.db` and
-auto-creates tables on startup (`Base.metadata.create_all`).
+With no `DATABASE_URL`, the backend uses `sqlite:///./neuradesk.db`. Either way,
+run `python -m scripts.migrate_db` after pulling new code (see §7).
 
 > **Single vs. multiple workers:** the admin SSE feed is now DB-backed, so you
 > can run multiple uvicorn/gunicorn workers safely. (Before v1.3 it only worked
@@ -106,10 +107,15 @@ Routing after `action_node` is decided by `_should_escalate` in `agents/graph.py
 `action_node` applies gates **in this order**, and only reaches an enterprise API
 if all pass:
 
-1. **`unknown` category** → escalate (no API call).
+1. **`unknown` category** (no enterprise action exists, e.g. a policy question) →
+   if the org's knowledge base answered it (`kb_grounded`) and confidence is above
+   the threshold, reply with that grounded answer — **no API call**. Otherwise escalate.
 2. **Low confidence** (`< escalation_confidence_threshold`, default 0.6) → escalate.
-   The prompt-injection guard and empty/off-topic retrieval both cap confidence to
-   0.3, so they funnel through here *before* any action runs.
+   This is the *triage* confidence; the prompt-injection guard caps it to 0.3, so
+   suspicious input funnels through here *before* any action runs. Knowledge-base
+   coverage deliberately does **not** lower it — `knowledge_node` reports
+   `kb_grounded` instead, so a missing article never blocks a well-understood
+   action (the reply then uses a standard per-action message).
 3. **Cross-user request** → escalate. The action target is **always the
    authenticated submitter** (`state["user_id"]`, from the JWT). A different
    identity named in the ticket text is an untrusted hint, never the target.
@@ -127,16 +133,19 @@ if all pass:
 
 1. Destructive ticket halts at `awaiting_confirmation`; the WS emits the status.
 2. UI shows Confirm / Cancel.
-3. `POST /tickets/{id}/confirm-action` replays the graph with the **persisted
-   triage** (`intake_node` short-circuits — no LLM re-classification) and
-   `action_confirmed=True`. `POST /tickets/{id}/cancel` escalates instead.
+3. `POST /tickets/{id}/confirm-action` atomically claims the ticket
+   (`awaiting_confirmation → processing`, so a double-click can never execute the
+   action twice), then resumes through the same `_process_ticket` path as every
+   other ticket with the **persisted triage** (`intake_node` short-circuits — no
+   LLM re-classification) and `action_confirmed=True`. `POST /tickets/{id}/cancel`
+   escalates instead.
 
 ---
 
 ## 5. Testing
 
 ```bash
-pytest tests/ -v                      # full unit + integration suite (209 tests)
+pytest tests/ -v                      # full unit + integration suite (234 tests)
 pytest tests/test_action_node.py -v   # one file
 pytest tests/ -k "confirm or otp"     # by keyword
 ```
@@ -149,10 +158,11 @@ pytest tests/ -k "confirm or otp"     # by keyword
   `ENTERPRISE_API_SECRET`, `A2A_API_KEY=test-key`, tracing off) before any import,
   and an **autouse fixture mocks `_post_enterprise`** so no test makes a real
   enterprise HTTP call.
-- A few `TestFullGraph` smoke tests call the real `classify()` / LLM. With a
-  `GROQ_API_KEY` in `.env` they make live Groq calls; without one, `classify()`
-  falls back to `("unknown", 0.5)` and the ticket escalates — both outcomes are
-  asserted as valid.
+- **The suite is hermetic.** `conftest.py` points `DATABASE_URL` at a throwaway
+  SQLite file and blanks every LLM API key before the app is imported, so tests
+  never read/write your real database, never spend API quota, and pass even when
+  Postgres or the network is down. (Live-model quality checks live in
+  `tests/eval_rag.py`, not pytest.)
 
 **RAG evaluation (RAGAS)** — needs a real `GROQ_API_KEY`:
 
@@ -188,7 +198,7 @@ RAGAS runs only when a `GROQ_API_KEY` secret is present.
 | `DATABASE_URL` | `sqlite:///./neuradesk.db` | Postgres in prod (`postgresql://…`) |
 | `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | 10 / 20 | Postgres pool tuning |
 | `LLM_PROVIDER` | `groq` | `groq` \| `anthropic` \| `openai` |
-| `GROQ_API_KEY` / `GROQ_MODEL` | — / `llama-3.3-70b-versatile` | Groq LLM |
+| `GROQ_API_KEY` / `GROQ_MODEL` | — / `openai/gpt-oss-20b` | Groq LLM (Groq retires models — check `GET /openai/v1/models` if calls 404) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | alternate providers |
 | `ENTERPRISE_API_BASE_URL` | `http://localhost:8001` | mock enterprise API base |
 | `ENTERPRISE_API_SECRET` | — | bearer secret shared with the mock API |
@@ -198,6 +208,8 @@ RAGAS runs only when a `GROQ_API_KEY` secret is present.
 | `ALLOWED_ORIGINS` | `localhost:5173,4173` | CORS allowlist (comma-separated) |
 | `GCS_BUCKET` | — | screenshot upload target; unset → uploads skipped |
 | `ORG_CREATION_SECRET` | — | if set, creating a new org requires this token |
+| `INCLUDE_SAMPLE_KB` | `true` | serve the bundled demo policies to orgs that uploaded none |
+| `KB_SAMPLE_FALLBACK` | `false` | if an org's own docs don't match, answer from the samples instead of escalating |
 | `LANGCHAIN_TRACING_V2` / `LANGCHAIN_API_KEY` / `LANGCHAIN_PROJECT` | `false` / — / `neuradesk-dev` | LangSmith tracing |
 
 All tunable constants (timeouts, retry delays, RAG thresholds,
@@ -208,13 +220,29 @@ via same-named uppercase env vars.
 
 ## 7. Database & migrations
 
-Tables are auto-created on startup for fresh databases
-(`Base.metadata.create_all`), which is enough for local SQLite and the test suite.
-For **existing** databases (e.g. production Postgres), use Alembic — it reads
-`DATABASE_URL` from the environment (see `alembic/env.py`).
+**Run this after every pull and before first start — it is safe for any database state:**
 
 ```bash
-alembic upgrade head          # apply all migrations (current head: k1e2f3g4h5i6)
+python -m scripts.migrate_db
+```
+
+It handles all three cases (see `scripts/migrate_db.py`): an **empty** database
+gets the full schema created from the models and is stamped at head; an
+**Alembic-versioned** database is upgraded (`alembic upgrade head`); an
+**unversioned** database that the app already created is stamped if it matches
+the models, or the script stops and lists missing columns instead of guessing.
+
+> Why not plain `alembic upgrade head`? The first revision in the chain only adds
+> indexes (it was generated against tables `create_all` had already built), so
+> Alembic alone cannot build a schema from an empty database.
+
+App startup still runs `Base.metadata.create_all`, which adds missing *tables*
+but never missing *columns* — so skipping the migrate step after pulling new
+code can leave the app failing with errors like `column users.otp_attempts does
+not exist`. Lower-level Alembic commands (they read `DATABASE_URL` from the env):
+
+```bash
+alembic current               # revision the database is at
 alembic heads                 # show the current head (should be a single revision)
 alembic history               # full chain
 alembic revision -m "add X"   # scaffold a new migration
@@ -245,10 +273,27 @@ keep the ORM model and the migration in sync.
 
 ### Add a RAG knowledge document
 
-- Global KB: drop a `.md` file into `rag/data/` (re-chunked on next index build).
-- Per-org KB: `POST /admin/kb` (text) or `POST /admin/kb/upload` (PDF/TXT/MD/DOCX).
-  Uploads trigger a live FAISS `add_documents()` and a cross-worker reload via the
-  sentinel file.
+Each organisation brings **its own** policies. Admins upload them with
+`POST /admin/kb` (text) or `POST /admin/kb/upload` (PDF/TXT/MD/DOCX, ≤ 10 MB);
+they are stored per org in `org_knowledge_docs` and loaded **per ticket** for that
+org only — they are never added to the shared index, so one org's documents can
+never answer another org's ticket.
+
+How retrieval treats them (`HybridRetriever.search`):
+
+1. Uploaded docs are split into one passage per paragraph (`rag.loader.chunk_text`;
+   long PDF pages are sentence-split, ≤ 900 chars) so every section of a long
+   handbook is searchable, then BM25-prefiltered and cross-encoder reranked.
+2. **The org's documents are authoritative.** If the best org passage clears
+   `RAG_SCORE_THRESHOLD`, only org passages are used — never blended with sample
+   text that could contradict the org's policy.
+3. Org has docs but none match → the ticket escalates to a human (set
+   `KB_SAMPLE_FALLBACK=true` to answer from the bundled samples instead).
+4. Org has uploaded nothing → the bundled demo policies in `rag/data/` are used
+   (`INCLUDE_SAMPLE_KB=false` disables them entirely for production).
+
+The `rag/data/*.md` files are **fictional sample policies** for demos and tests;
+edit them only to change the demo corpus.
 
 Always use the hybrid retriever (`rag/retriever.py`, `get_retriever()`) for any
 new knowledge lookup — don't hand-roll a second retrieval path.
@@ -257,6 +302,12 @@ new knowledge lookup — don't hand-roll a second retrieval path.
 
 ## 9. Common gotchas
 
+- **Groq retires models.** If tickets suddenly all escalate as `unknown`, check the
+  backend log for `404 … model … does not exist` and list what your key can use:
+  `curl -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models`.
+  Groq's free tier is ~1,000 requests/day and 8,000 tokens/min (≈ 2–3 tickets/min);
+  use a paid tier for real multi-user load. There is currently no Groq vision model
+  on the free tier, so screenshot tickets fall back to their text.
 - **Model download on first run** — the first ticket (or `/health/deep`) builds
   the retriever and downloads the embedder/cross-encoder. Expect a slow first call.
 - **`HF_HUB_OFFLINE=1`** avoids accidental network calls once models are cached.

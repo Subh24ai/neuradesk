@@ -19,9 +19,12 @@ import faiss  # type: ignore[import-untyped]
 
 from agents.state import RetrievedChunk
 from core.config import get_settings
-from rag.loader import Document, load_documents
+from rag.loader import Document, chunk_text, load_documents
 
 _cfg = get_settings()
+
+# Max org passages sent to the cross-encoder per ticket (BM25 prefilters above this).
+_ORG_RERANK_CANDIDATES: int = 40
 
 log = structlog.get_logger(__name__)
 
@@ -128,20 +131,76 @@ class HybridRetriever:
         top_k: int = 3,
         org_chunks: list[dict] | None = None,
     ) -> list[RetrievedChunk]:
-        """Run hybrid retrieval and return the top_k best chunks.
+        """Return the top_k most relevant passages for a ticket.
+
+        Source precedence (organisations upload their own policies):
+
+        1. **Org documents are authoritative.** Each uploaded doc is split into
+           passages and reranked. If the best org passage clears
+           ``rag_score_threshold``, ONLY org passages are returned — never mixed
+           with bundled sample text, which could contradict the org's policy.
+        2. Org has docs but none are relevant → return the (sub-threshold) org
+           passages so the caller escalates, unless ``kb_sample_fallback`` is on.
+        3. Org has no docs (or fallback is on) → search the bundled sample KB
+           (``include_sample_kb``; demo mode).
 
         Args:
             query: Free-text search query from the ticket or agent.
-            top_k: Maximum number of chunks to return after reranking.
-            org_chunks: Optional org-specific KB docs (list of dicts with
-                ``title`` and ``content`` keys).  When provided, these are
-                merged into the candidate pool *before* cross-encoder
-                reranking so they receive identical scoring treatment to
-                global docs.  No score boost is applied.
+            top_k: Maximum number of passages to return.
+            org_chunks: The org's uploaded KB docs (dicts with ``title`` and
+                ``content``). Supplied per call from the DB, so one org's
+                documents can never surface for another org.
 
         Returns:
-            List of RetrievedChunk dicts sorted by cross-encoder score descending.
+            RetrievedChunk dicts sorted by cross-encoder score, descending.
         """
+        if org_chunks:
+            org_ranked = self._search_org(query, org_chunks, top_k)
+            if org_ranked and org_ranked[0]["score"] >= _cfg.rag_score_threshold:
+                return org_ranked
+            if not _cfg.kb_sample_fallback:
+                return org_ranked
+        if not _cfg.include_sample_kb:
+            return []
+        return self._search_global(query, top_k)
+
+    def _rerank(self, query: str, candidates: list[tuple[str, str]], top_k: int) -> list[RetrievedChunk]:
+        """Cross-encoder score (source, content) candidates and return the top_k."""
+        if not candidates:
+            return []
+        ce_scores: list[float] = self._cross_encoder.predict(
+            [(query, content) for _, content in candidates]
+        ).tolist()
+        ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
+        return [
+            {"source": source, "content": content, "score": float(score)}
+            for (source, content), score in ranked[:top_k]
+        ]
+
+    def _search_org(self, query: str, org_docs: list[dict], top_k: int) -> list[RetrievedChunk]:
+        """Passage-level retrieval over one org's uploaded documents.
+
+        Docs are chunked so long PDFs are fully searchable; a BM25 prefilter keeps
+        cross-encoder cost bounded for large handbooks.
+        """
+        passages: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for doc in org_docs:
+            for piece in chunk_text(str(doc.get("content") or "")):
+                if piece not in seen:
+                    seen.add(piece)
+                    passages.append((f"org-kb:{doc.get('title') or 'untitled'}", piece))
+        if len(passages) > _ORG_RERANK_CANDIDATES:
+            bm25 = BM25Okapi([p.lower().split() for _, p in passages])
+            scores = bm25.get_scores(query.lower().split())
+            keep = np.argsort(scores)[::-1][:_ORG_RERANK_CANDIDATES]
+            passages = [passages[int(i)] for i in keep]
+        results = self._rerank(query, passages, top_k)
+        log.info("retriever.org_search_done", passages=len(passages), top_k=top_k)
+        return results
+
+    def _search_global(self, query: str, top_k: int) -> list[RetrievedChunk]:
+        """Hybrid FAISS + BM25 recall over the bundled corpus, then cross-encoder rerank."""
         n_docs = len(self._documents)
         stage_k = min(_STAGE_CANDIDATES, n_docs)
 
@@ -168,28 +227,12 @@ class HybridRetriever:
                 seen.add(h)
                 candidate_idxs.append(idx)
 
-        # ── 4. Build unified candidate pool, merging org docs before reranking ──
+        # ── 4. Cross-encoder reranking over the candidate pool ───────────────
         candidates: list[tuple[str, str]] = [
             (self._documents[idx]["source"], self._texts[idx])
             for idx in candidate_idxs
         ]
-        if org_chunks:
-            seen_content: set[str] = {content for _, content in candidates}
-            for oc in org_chunks:
-                if oc["content"] not in seen_content:
-                    candidates.append((f"org-kb:{oc['title']}", oc["content"]))
-                    seen_content.add(oc["content"])
-
-        # ── 5. Cross-encoder reranking over the full candidate pool ──────────
-        pairs: list[tuple[str, str]] = [(query, content) for _, content in candidates]
-        ce_scores: list[float] = self._cross_encoder.predict(pairs).tolist()
-
-        ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
-
-        results: list[RetrievedChunk] = [
-            {"source": source, "content": content, "score": float(score)}
-            for (source, content), score in ranked[:top_k]
-        ]
+        results = self._rerank(query, candidates, top_k)
 
         log.info(
             "retriever.retrieve_done",

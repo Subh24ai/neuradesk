@@ -108,15 +108,21 @@ class TestKnowledgeNode:
 
         assert result["resolution"] == llm_text
         assert result["resolution_template"] is not None
+        assert result["kb_grounded"] is True
 
-    def test_empty_retrieval_triggers_escalation(self) -> None:
-        """Empty retrieval sets confidence to 0.3 (graph router escalates on < 0.6)."""
+    def test_empty_retrieval_marks_not_grounded(self) -> None:
+        """Empty retrieval → kb_grounded False; the triage confidence is left untouched.
+
+        KB coverage is not a safety signal: a well-understood action (e.g. a
+        password reset) must still run when the org has no article for it.
+        """
         state = _base_state()
 
         with patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever([])):
             result = knowledge_node(state)
 
-        assert result["confidence"] == pytest.approx(0.3)
+        assert result["kb_grounded"] is False
+        assert result["confidence"] == pytest.approx(0.92)
         assert result["retrieved_chunks"] == []
         assert result["status"] == "acting"
 
@@ -172,8 +178,8 @@ class TestKnowledgeNode:
         assert result["retrieved_chunks"] is not None
         assert result["status"] == "acting"
 
-    def test_low_rag_score_triggers_escalation(self) -> None:
-        """A top-chunk cross-encoder score below 0.35 sets confidence to 0.3.
+    def test_low_rag_score_marks_not_grounded(self) -> None:
+        """A top-chunk cross-encoder score below the threshold → kb_grounded False.
 
         Covers the case where a ticket is completely outside the KB — e.g.
         'book me a flight to Dubai'.  The retriever may return chunks but the
@@ -193,9 +199,8 @@ class TestKnowledgeNode:
         with patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(off_topic_chunks)):
             result = knowledge_node(state)
 
-        assert result["confidence"] == pytest.approx(0.3), (
-            "Off-topic ticket with sub-threshold score must have confidence 0.3 so the graph escalates"
-        )
+        assert result["kb_grounded"] is False, "Off-topic ticket must not be treated as KB-answered"
+        assert result.get("resolution") is None, "No resolution may be invented from off-topic chunks"
         assert result["status"] == "acting"
         assert result["retrieved_chunks"] == off_topic_chunks
 

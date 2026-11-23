@@ -42,7 +42,10 @@ def escalation_node(state: TicketState) -> TicketState:
     elif error:
         reason = f"Action node error: {error}"
     else:
-        reason = "Escalated by policy."
+        # Keep the specific reason an upstream gate recorded (e.g. the
+        # authorization gate's "request names another user's account") rather
+        # than replacing it with a generic one.
+        reason = state.get("escalation_reason") or "Escalated by policy."
 
     assignee = _PRIORITY_GROUP.get(priority, "tier-1-support")
 

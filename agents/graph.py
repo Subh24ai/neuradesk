@@ -33,6 +33,10 @@ def _should_escalate(state: TicketState) -> Literal["escalation_node", "__end__"
         return "__end__"  # halt graph; user must confirm via POST /tickets/{id}/confirm-action
     if state.get("status") == "escalated":
         return "escalation_node"
+    if state.get("status") == "resolved":
+        # action_node only resolves after its own confidence/authorization gates
+        # (including informational answers to "unknown" tickets the KB covered).
+        return "__end__"
     if (state.get("confidence") or 1.0) < 0.6:
         return "escalation_node"
     if state.get("category") == "unknown":
@@ -129,6 +133,7 @@ def build_initial_state(
         "entities": None,
         "retrieved_chunks": None,
         "resolution_template": None,
+        "kb_grounded": None,
         "action_taken": None,
         "action_result": None,
         "action_confirmed": None,

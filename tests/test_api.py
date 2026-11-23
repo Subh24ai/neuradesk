@@ -1,7 +1,8 @@
 """Tests for FastAPI routes — auth endpoints, ticket CRUD, and access control."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 def _register_and_verify(
@@ -592,6 +593,7 @@ class TestConfirmCancel:
     def _create_awaiting_ticket(self, test_client, db_engine, email: str, org: str) -> tuple[str, str]:
         """Register a user, create a ticket, force status to awaiting_confirmation. Returns (ticket_id, token)."""
         from sqlalchemy.orm import sessionmaker
+
         from api.models import TicketModel
 
         token = _register_and_verify(test_client, email, "password123", org)
@@ -611,30 +613,66 @@ class TestConfirmCancel:
         db.close()
         return ticket_id, token
 
-    def test_confirm_action_resolves_destructive_ticket(self, test_client, db_engine) -> None:
-        """POST /tickets/{id}/confirm-action re-runs graph with confirmed=True and returns resolved status."""
-        ticket_id, token = self._create_awaiting_ticket(
-            test_client, db_engine, "confirm@action.ai", "Confirm Org"
-        )
-        resolved_state = {
-            "status": "resolved",
-            "resolution": "Access revoked successfully.",
-            "category": "access_request",
-            "intent": "access_revoke",
-            "confidence": 0.95,
-            "priority": "HIGH",
-            "escalation_reason": None,
-            "assignee_group": None,
-        }
-        with patch("api.main.langgraph_graph") as mock_graph:
-            mock_graph.invoke.return_value = resolved_state
-            r = test_client.post(
-                f"/tickets/{ticket_id}/confirm-action",
-                headers={"Authorization": f"Bearer {token}"},
-            )
+    @staticmethod
+    def _as_triaged_delete(db_engine, ticket_id: str) -> None:
+        """Give the awaiting ticket the triage an account_delete request would have."""
+        from sqlalchemy.orm import sessionmaker
 
-        assert r.status_code == 200
+        from api.models import TicketModel
+
+        db = sessionmaker(bind=db_engine)()
+        t = db.get(TicketModel, ticket_id)
+        t.category, t.intent, t.confidence, t.priority = "account_delete", "account_delete", 0.95, "HIGH"
+        db.commit()
+        db.close()
+
+    def test_confirm_action_runs_real_graph_and_resolves(self, test_client, db_engine, monkeypatch) -> None:
+        """Confirm runs the REAL async graph (regression: sync invoke() crashed with
+        'No synchronous function provided to action_node') and executes the SAME action."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sqlalchemy.orm import sessionmaker
+
+        import api.main as main_mod
+
+        ticket_id, token = self._create_awaiting_ticket(test_client, db_engine, "confirm@action.ai", "Confirm Org")
+        self._as_triaged_delete(db_engine, ticket_id)
+        monkeypatch.setattr(main_mod, "SessionLocal", sessionmaker(bind=db_engine))
+        llm = MagicMock()
+        llm.invoke.return_value = MagicMock(content="Your account deletion is complete, {username}.")
+        retr = MagicMock()
+        retr.search.return_value = [{"source": "org-kb:Offboarding", "content": "Account deletion steps.", "score": 3.0}]
+        iam_ok = {"success": True, "action": "delete-account", "result": {"deleted": True}}
+
+        with patch("agents.knowledge_node.get_llm", return_value=llm), \
+             patch("agents.knowledge_node.get_retriever", return_value=retr), \
+             patch("agents.intake_node.classify") as classify, \
+             patch("agents.action_node._post_enterprise", new_callable=AsyncMock, return_value=iam_ok) as post:
+            r = test_client.post(f"/tickets/{ticket_id}/confirm-action", headers={"Authorization": f"Bearer {token}"})
+
+        assert r.status_code == 200, r.text
         assert r.json()["status"] == "resolved"
+        assert r.json()["category"] == "account_delete"
+        classify.assert_not_called()  # resumed from the persisted triage — no re-classification
+        post.assert_awaited_once()
+        assert post.call_args.args[0] == "/iam/delete-account"
+
+    def test_double_confirm_cannot_execute_twice(self, test_client, db_engine) -> None:
+        """Once a confirmation is claimed, a second confirm is rejected (no double delete)."""
+        from sqlalchemy.orm import sessionmaker
+
+        import api.main as main_mod
+        from api.main import _claim_ticket
+
+        ticket_id, token = self._create_awaiting_ticket(test_client, db_engine, "dbl@action.ai", "Double Org")
+        main_mod_session = main_mod.SessionLocal
+        main_mod.SessionLocal = sessionmaker(bind=db_engine)
+        try:
+            assert _claim_ticket(ticket_id, from_status="awaiting_confirmation") is True  # first click wins
+            r = test_client.post(f"/tickets/{ticket_id}/confirm-action", headers={"Authorization": f"Bearer {token}"})
+        finally:
+            main_mod.SessionLocal = main_mod_session
+        assert r.status_code == 409
 
     def test_cancel_action_escalates(self, test_client, db_engine) -> None:
         """POST /tickets/{id}/cancel sets status to escalated with a cancellation reason."""

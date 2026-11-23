@@ -12,7 +12,7 @@ Metrics collected during development.  Week 4 targets include load-test numbers 
 | Training set | 78 synthetic examples across 9 categories |
 | Validation set | 27 synthetic examples (3 per category, held-out) |
 | Optimizer | BootstrapFewShot, max_bootstrapped_demos=4 |
-| Model | llama-3.3-70b-versatile (Groq) |
+| Model | llama-3.3-70b-versatile (Groq) — **retired by Groq**; current default is `openai/gpt-oss-20b` |
 
 ## RAG Retrieval Pipeline
 

@@ -447,15 +447,21 @@ def get_ticket(
     tags=["tickets"],
     summary="Confirm a destructive action awaiting explicit authorization",
 )
-def confirm_action(
+async def confirm_action(
     ticket_id: str,
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketResponse:
-    """Re-run the agent graph with action_confirmed=True for a ticket in awaiting_confirmation status.
+    """Execute a destructive action the owner has explicitly confirmed.
+
+    Atomically moves the ticket from 'awaiting_confirmation' to 'processing' so a
+    double-click (or two tabs) can never run the action twice, then resumes the
+    graph from the ORIGINAL triage (no LLM re-classification) through the same
+    _process_ticket path as every other ticket — persistence, admin SSE and the
+    owner email included.
 
     Returns 404 if the ticket does not exist or is not owned by the caller.
-    Returns 409 if the ticket is not in 'awaiting_confirmation' status.
+    Returns 409 if the ticket is not awaiting confirmation (or is already being confirmed).
     """
     ticket = db.get(TicketModel, ticket_id)
     if ticket is None or ticket.user_id != current_user.id:
@@ -463,92 +469,18 @@ def confirm_action(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "Ticket not found", "code": "TICKET_NOT_FOUND"},
         )
-    if ticket.status != "awaiting_confirmation":
+    if ticket.status != "awaiting_confirmation" or not _claim_ticket(
+        ticket_id, from_status="awaiting_confirmation"
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "Ticket is not awaiting confirmation", "code": "INVALID_TICKET_STATUS"},
         )
 
-    # Load org context (mirrors WS handler logic).
-    org_kb_docs: list[dict] = []
-    org_api_url: Optional[str] = None
-    org_name: str = ""
-    support_email: str = os.getenv("SUPPORT_EMAIL", "")
-    slack_webhook_url: Optional[str] = None
-    if ticket.org_id:
-        kb_rows = (
-            db.query(OrgKnowledgeDocModel)
-            .filter(OrgKnowledgeDocModel.org_id == ticket.org_id)
-            .all()
-        )
-        org_kb_docs = [{"title": r.title, "content": r.content} for r in kb_rows]
-        org_cfg = db.get(OrgConfigModel, ticket.org_id)
-        if org_cfg:
-            org_api_url = org_cfg.itsm_url or None
-            slack_webhook_url = org_cfg.slack_webhook_url or None
-        org_obj = db.get(OrganizationModel, ticket.org_id)
-        org_name = org_obj.name if org_obj else ""
+    await _process_ticket(ticket_id, resume_confirmed=True)
 
-    initial_state = build_initial_state(
-        ticket.raw_text, current_user.email, ticket.channel or "text",
-        org_id=ticket.org_id,
-        org_name=org_name,
-        org_kb_docs=org_kb_docs,
-        org_api_url=org_api_url,
-        raw_image_b64=ticket.raw_image_b64,
-        support_email=support_email,
-        user_email=current_user.email,
-        slack_webhook_url=slack_webhook_url,
-    )
-    # Carry the ORIGINAL triage into the replay so intake_node short-circuits
-    # instead of re-classifying. Re-running the LLM here could execute a
-    # different action than the one the user just authorized.
-    initial_state["category"] = ticket.category  # type: ignore[index]
-    initial_state["intent"] = ticket.intent or ticket.category  # type: ignore[index]
-    initial_state["priority"] = ticket.priority  # type: ignore[index]
-    initial_state["confidence"] = ticket.confidence  # type: ignore[index]
-    initial_state["action_confirmed"] = True  # type: ignore[index]
-
-    # Pass a thread_id so the call succeeds whether or not a checkpointer is
-    # configured (a checkpointer-compiled graph requires it).
-    final_state: dict = langgraph_graph.invoke(
-        initial_state, config={"configurable": {"thread_id": ticket_id}}
-    )
-
-    ticket.status = final_state.get("status", "resolved")
-    ticket.category = final_state.get("category")
-    ticket.intent = final_state.get("intent")
-    ticket.confidence = final_state.get("confidence")
-    ticket.resolution = final_state.get("resolution")
-    ticket.escalation_reason = final_state.get("escalation_reason")
-    ticket.assignee_group = final_state.get("assignee_group")
-    ticket.priority = final_state.get("priority")
-    ticket.trace_url = get_trace_url() or ticket.trace_url
-    db.commit()
-    db.refresh(ticket)
-
-    # Mirror the WebSocket path: notify admins (SSE) and the owner (email) so a
-    # confirmed action isn't silently invisible to the dashboard and the user.
-    if ticket.org_id:
-        _publish_sse(ticket.org_id, {
-            "ticket_id": ticket.id,
-            "status": ticket.status,
-            "category": ticket.category,
-            "resolution": ticket.resolution,
-            "escalation_reason": ticket.escalation_reason,
-            "user_email": current_user.email,
-            "priority": ticket.priority,
-            "assignee_group": ticket.assignee_group,
-        })
-    if ticket.status == "resolved":
-        try:
-            send_ticket_notification(
-                current_user.email, ticket_id, ticket.status,
-                ticket.resolution, ticket.escalation_reason,
-            )
-        except Exception:
-            log.warning("tickets.confirm_action.notify_failed", ticket_id=ticket_id)
-
+    db.expire_all()  # _process_ticket committed through its own session
+    ticket = db.get(TicketModel, ticket_id)
     log.info("tickets.confirm_action.done", ticket_id=ticket_id, status=ticket.status)
     return _orm_to_response(ticket)
 
@@ -660,17 +592,18 @@ def _load_org_context(db: Session, ticket: TicketModel) -> dict:
     return ctx
 
 
-def _claim_ticket(ticket_id: str) -> bool:
-    """Atomically move a ticket from 'pending' to 'processing'.
+def _claim_ticket(ticket_id: str, from_status: str = "pending") -> bool:
+    """Atomically move a ticket from ``from_status`` to 'processing'.
 
     Returns True only for the single caller that won the claim, so the WebSocket
-    and the background worker never process the same ticket twice.
+    and the background worker never process the same ticket twice — and a
+    confirmed destructive action can never be executed twice.
     """
     db = SessionLocal()
     try:
         updated = (
             db.query(TicketModel)
-            .filter(TicketModel.id == ticket_id, TicketModel.status == "pending")
+            .filter(TicketModel.id == ticket_id, TicketModel.status == from_status)
             .update({"status": "processing"}, synchronize_session=False)
         )
         db.commit()
@@ -686,6 +619,7 @@ def _claim_ticket(ticket_id: str) -> bool:
 async def _process_ticket(
     ticket_id: str,
     on_node: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+    resume_confirmed: bool = False,
 ) -> dict:
     """Run the agent graph for an already-claimed ticket, persist, and notify.
 
@@ -693,6 +627,10 @@ async def _process_ticket(
     it from the background worker. Opens its own DB session and never depends on
     a live client connection. Returns the terminal {status, resolution,
     escalation_reason, assignee_group, trace_url}.
+
+    With ``resume_confirmed=True`` the graph resumes a ticket the owner has
+    confirmed: the persisted triage is carried in (intake_node short-circuits, so
+    the LLM never re-classifies) and ``action_confirmed`` is set.
     """
     db = SessionLocal()
     try:
@@ -712,6 +650,12 @@ async def _process_ticket(
             user_email=user_email,
             **ctx,
         )
+        if resume_confirmed:
+            initial_state["category"] = ticket.category  # type: ignore[typeddict-item]
+            initial_state["intent"] = ticket.intent or ticket.category  # type: ignore[typeddict-item]
+            initial_state["priority"] = ticket.priority
+            initial_state["confidence"] = ticket.confidence
+            initial_state["action_confirmed"] = True
         final_state: dict = {}
 
         async def _run() -> None:

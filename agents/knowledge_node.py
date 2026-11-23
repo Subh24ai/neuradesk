@@ -16,8 +16,8 @@ _cfg = get_settings()
 log = structlog.get_logger(__name__)
 
 # Cross-encoder scores below this threshold indicate the KB has no useful answer.
-# ms-marco-MiniLM-L-6-v2 sigmoid scores: > 0.35 = plausible match; < 0.35 = off-topic.
-# Force confidence low so the escalation router picks it up.
+# ms-marco-MiniLM-L-6-v2 returns raw logits (not 0–1 probabilities): on-topic
+# passages typically score > 1, off-topic ones are strongly negative.
 _RAG_SCORE_THRESHOLD: float = _cfg.rag_score_threshold
 
 # Number of top-ranked chunks fed to the LLM when generating the resolution.
@@ -40,11 +40,15 @@ def knowledge_node(state: TicketState) -> TicketState:
     retrieves the top-3 chunks, then invokes the LLM to produce a one-sentence
     resolution from the highest-scoring chunk.
 
-    If retrieval returns no results, confidence is set to 0.3 so the graph
-    router escalates the ticket after the action node runs.
+    Sets ``kb_grounded`` to report whether the knowledge base actually answered
+    the ticket (top passage cleared ``rag_score_threshold``). It deliberately does
+    NOT touch ``confidence``: that is the triage/injection signal the action node
+    uses to decide whether it may act at all. A missing KB article must not stop a
+    well-understood action (e.g. a password reset) — it only means the reply
+    uses a standard message instead of a grounded one.
 
-    Reads:  category, extracted_text, raw_text, trace_id
-    Writes: retrieved_chunks, resolution_template, resolution, status
+    Reads:  category, extracted_text, raw_text, org_kb_docs, trace_id
+    Writes: retrieved_chunks, kb_grounded, resolution_template, resolution, status
     """
     category: str = state.get("category") or "unknown"
     ticket_text: str = (
@@ -62,7 +66,7 @@ def knowledge_node(state: TicketState) -> TicketState:
         query, top_k=3, org_chunks=org_kb_docs or None
     )
 
-    # No results → low confidence so the graph router escalates.
+    # No results → the KB has no answer for this ticket.
     if not chunks:
         log.warning(
             "knowledge_node.empty_retrieval",
@@ -73,11 +77,11 @@ def knowledge_node(state: TicketState) -> TicketState:
         return {
             **state,
             "retrieved_chunks": [],
-            "confidence": 0.3,
+            "kb_grounded": False,
             "status": "acting",
         }  # type: ignore[return-value]
 
-    # Top chunk score below threshold means KB has no real answer — escalate.
+    # Top chunk score below threshold means the KB has no real answer.
     top_chunk = chunks[0]
     if top_chunk["score"] < _RAG_SCORE_THRESHOLD:
         log.warning(
@@ -89,7 +93,7 @@ def knowledge_node(state: TicketState) -> TicketState:
         return {
             **state,
             "retrieved_chunks": chunks,
-            "confidence": 0.3,
+            "kb_grounded": False,
             "status": "acting",
         }  # type: ignore[return-value]
     try:
@@ -122,6 +126,7 @@ def knowledge_node(state: TicketState) -> TicketState:
 
     updates: dict = {
         "retrieved_chunks": chunks,
+        "kb_grounded": True,
         "resolution_template": resolution_template,
         "resolution": resolution,
         "status": "acting",

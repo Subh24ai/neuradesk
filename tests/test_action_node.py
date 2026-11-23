@@ -242,3 +242,80 @@ class TestActionNode:
 
         mock_post.assert_not_called()
         assert result["status"] == "escalated"
+
+
+class TestKnowledgeGroundingDecoupled:
+    """KB coverage shapes the reply; only triage confidence gates the action."""
+
+    @pytest.mark.asyncio
+    async def test_action_runs_without_kb_article(self) -> None:
+        """Regression: an org with no password article must still get its reset executed."""
+        state = _base_state(intent="password_reset", kb_grounded=False, resolution_template=None)
+
+        with patch(
+            "agents.action_node._post_enterprise", return_value=_api_success("reset-password")
+        ) as mock_post:
+            result = await action_node(state)
+
+        mock_post.assert_called_once()
+        assert result["status"] == "resolved"
+        assert "temporary password" in result["resolution"]
+        assert "test-user@corp.com" in result["resolution"]
+
+    @pytest.mark.asyncio
+    async def test_grounded_reply_uses_kb_answer(self) -> None:
+        """When the KB answered, the reply is the grounded KB text."""
+        state = _base_state(
+            intent="password_reset", kb_grounded=True,
+            resolution_template="Use the Acme portal at go/reset, {username}.",
+        )
+        with patch("agents.action_node._post_enterprise", return_value=_api_success()):
+            result = await action_node(state)
+        assert result["resolution"] == "Use the Acme portal at go/reset, test-user@corp.com."
+
+    @pytest.mark.asyncio
+    async def test_stray_braces_in_kb_text_do_not_crash(self) -> None:
+        """LLM text containing other {braces} is rendered safely (str.format would raise)."""
+        state = _base_state(
+            intent="password_reset", kb_grounded=True,
+            resolution_template="Run `reset {--all}` then sign in, {username}. Use {curly} freely.",
+        )
+        with patch("agents.action_node._post_enterprise", return_value=_api_success()):
+            result = await action_node(state)
+        assert result["status"] == "resolved"
+        assert "{--all}" in result["resolution"] and "test-user@corp.com" in result["resolution"]
+
+    @pytest.mark.asyncio
+    async def test_policy_question_answered_from_kb_without_api_call(self) -> None:
+        """An 'unknown' ticket the org KB answers is resolved as information — no API call."""
+        state = _base_state(
+            intent="unknown", category="unknown", confidence=0.9, kb_grounded=True,
+            resolution_template="You get 30 days of annual leave; request it in BambooHR, {username}.",
+        )
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = await action_node(state)
+        mock_post.assert_not_called()
+        assert result["status"] == "resolved"
+        assert result["action_taken"] == "knowledge_answer"
+        assert "30 days" in result["resolution"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_without_kb_answer_escalates(self) -> None:
+        """No KB answer → an unknown ticket still escalates to a human."""
+        state = _base_state(intent="unknown", category="unknown", confidence=0.9, kb_grounded=False)
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = await action_node(state)
+        mock_post.assert_not_called()
+        assert result["status"] == "escalated"
+
+    @pytest.mark.asyncio
+    async def test_suspicious_unknown_is_not_answered_even_if_kb_matches(self) -> None:
+        """Injection-capped confidence (0.3) blocks the informational answer path too."""
+        state = _base_state(
+            intent="unknown", category="unknown", confidence=0.3, kb_grounded=True,
+            resolution_template="Some policy answer, {username}.",
+        )
+        with patch("agents.action_node._post_enterprise") as mock_post:
+            result = await action_node(state)
+        mock_post.assert_not_called()
+        assert result["status"] == "escalated"

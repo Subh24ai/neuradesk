@@ -5,7 +5,7 @@ Run with:
 
 Requires GROQ_API_KEY in .env (used as the LLM judge via LangChain).
 Evaluates faithfulness and answer_relevancy over 10 QA pairs
-(2 per ticket category) using llama-3.1-8b-instant as the judge model
+(2 per ticket category) using openai/gpt-oss-20b as the judge model
 to stay within Groq free-tier rate limits.
 Exits with code 1 if faithfulness < 0.8 so CI fails.
 """
@@ -192,11 +192,11 @@ def main() -> None:
         }
     )
 
-    # Use llama-3.1-8b-instant as the RAGAS judge — higher rate limits on
+    # Use openai/gpt-oss-20b as the RAGAS judge — higher rate limits on
     # Groq free tier than 70b.  Other pipeline components keep their own models.
     # max_tokens=2048 prevents LLMDidNotFinishException on faithfulness decomposition.
     groq_llm = ChatGroq(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         api_key=os.getenv("GROQ_API_KEY"),
         max_tokens=4096,
     )

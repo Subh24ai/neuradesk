@@ -39,7 +39,17 @@ class Settings(BaseSettings):
     action_retry_delays: list[float] = [1.0, 2.0, 4.0]
 
     # ── RAG ───────────────────────────────────────────────────────────────
+    # Minimum cross-encoder score for "the KB has a real answer". Note: the
+    # ms-marco cross-encoder returns raw logits (roughly -10..+10), not 0–1
+    # probabilities — on-topic passages typically score > 1.
     rag_score_threshold: float = 0.35
+    # Bundled demo policies in rag/data/. Organisations upload their own policies;
+    # the samples are only used for orgs that have uploaded nothing (demo mode).
+    include_sample_kb: bool = True
+    # When an org HAS uploaded docs but none match a ticket, answer from the
+    # bundled sample policies anyway? Default False: escalate to a human rather
+    # than answer an employee from a fictional policy.
+    kb_sample_fallback: bool = False
     rag_stage_candidates: int = 10
     embed_model: str = "all-MiniLM-L6-v2"
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"

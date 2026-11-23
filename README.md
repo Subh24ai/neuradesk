@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-209%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](tests/)
 
 ## Live Demo
 - **App**: https://neuradesk-112430812621.us-central1.run.app
@@ -58,7 +58,7 @@ graph TD
 | Orchestration | LangGraph 1.2, typed `TicketState` |
 | RAG | FAISS + rank-bm25 + sentence-transformers cross-encoder |
 | Prompt optimization | DSPy 2.5 |
-| LLM | Groq (llama-3.3-70b-versatile) — swappable via `LLM_PROVIDER` env var (Anthropic/OpenAI supported) |
+| LLM | Groq (`openai/gpt-oss-20b`) — swappable via `LLM_PROVIDER` env var (Anthropic/OpenAI supported) |
 | Tracing | LangSmith — every node is a named span |
 | API | FastAPI 0.115, WebSocket streaming, structlog |
 | Auth | JWT (PyJWT) + bcrypt, 8-hour sessions |
@@ -112,7 +112,8 @@ docker-compose up --build
 ENTERPRISE_API_SECRET=local-dev-secret-123 \
   uvicorn services.enterprise_api:app --port 8001
 
-# Terminal 2 — Main backend (port 8000):
+# Terminal 2 — Main backend (port 8000). Run the migrate step first after every pull:
+python -m scripts.migrate_db
 uvicorn api.main:app --reload --port 8000
 
 # Terminal 3 — Frontend (port 3000):
@@ -140,7 +141,7 @@ curl -s -X POST http://localhost:8000/tickets \
 
 **Run tests:**
 ```bash
-pytest tests/ -v          # 209 tests
+pytest tests/ -v          # 234 tests
 ```
 
 **Run the load test:**
@@ -270,7 +271,7 @@ for VPN setup."
 | DSPy classifier accuracy — zero-shot  | 92.6% (25/27) |
 | DSPy classifier accuracy — compiled   | 96.3% (26/27) |
 
-See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
+Figures above were measured with Groq `llama-3.3-70b-versatile` / `llama-3.1-8b-instant`, which Groq has since retired. The default is now `openai/gpt-oss-20b`, which scored **27/27 (100%)** on the same 27-ticket triage validation set (Nov 2026); latency and RAGAS figures still need re-measuring on the new model. See [BENCHMARKS.md](BENCHMARKS.md) for the original breakdown.
 
 ## Known Limitations
 
@@ -280,7 +281,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 |---|---|
 | ✅ No escalation notifications | Email + Slack alerts fire from `escalation_node` |
 | ✅ Destructive actions unconfirmable from UI | Confirm/cancel flow via `POST /tickets/{id}/confirm-action` |
-| ✅ FAISS not updated on KB upload | `add_documents()` called after every admin KB insert |
+| ✅ FAISS not updated on KB upload | Org docs are loaded per ticket from the DB (never added to the shared index — keeps orgs isolated) |
 | ✅ JWT not revocable | `TokenBlocklist` table — every authenticated request checked |
 | ✅ Images not persisted after upload | GCS upload utility; URL stored in `tickets.image_url` |
 | ✅ No admin real-time push | SSE stream at `GET /admin/stream` with per-org queue |
@@ -310,6 +311,14 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 | ✅ OTP brute-forceable (no lockout) | Per-account attempt counter locks the code after 5 wrong guesses; constant-time compare |
 | ✅ Software entity matched substrings (`word` inside `password`) | Word-boundary matching |
 | ✅ App refused to boot without `A2A_API_KEY` | Key is now checked per-request; unconfigured A2A endpoints return 503 |
+| ✅ Org-uploaded policies ignored past page 1 / overridden by sample policies | Uploads are chunked per paragraph; an org's own documents are authoritative over the bundled samples |
+| ✅ Groq retired `llama-3.3-70b-versatile` (every ticket escalated as `unknown`) | Default model is now `openai/gpt-oss-20b` (27/27 on the triage validation set) |
+| ✅ `alembic upgrade head` could not build or repair a database | `python -m scripts.migrate_db` handles empty, versioned and unversioned databases |
+| ✅ Ticket processing coupled to the browser WebSocket | Background worker processes every ticket; the WebSocket only streams the live timeline |
+| ✅ Confirming a destructive action crashed (`No synchronous function provided to "action_node"`) | Confirm runs the async graph through the shared processing path; atomic claim prevents double execution |
+| ✅ IAM endpoints (revoke/lock/delete) returned 500 whenever the secret came from `.env` | Enterprise secret is read per request, not at import time |
+| ✅ Policy questions escalated even when the org's handbook answered them | KB-grounded answers resolve `unknown` tickets without any API call; KB gaps no longer block well-understood actions |
+| ✅ Test suite wrote to the developer's real database and called the live LLM | Tests use a throwaway SQLite DB and no LLM keys — hermetic and quota-free |
 | ✅ Misc | Constant-time secret compares, `/health/deep` LLM check wired to the UI status badge, retrieval query cleanups |
 
 ### Remaining
@@ -331,6 +340,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for full breakdown and latency footnote.
 - ✅ **v1.1 hardening** — 8 production fixes: escalation alerts, confirmation flow, FAISS live update, JWT revocation, image persistence, SSE admin push, WS reconnect, Slack webhook — 169 tests green
 - ✅ **v1.2 security** — prompt injection guard, RAG threshold fix, real session management, Docker env fix, GCP Cloud Run deploy — 202 tests green
 - ✅ **v1.3 hardening** — authorization fix (JWT-only action identity), pre-action safety gate, confirm-action resume, cross-worker admin SSE, OTP lockout, `.dockerignore`, lazy A2A key — 209 tests green
+- ✅ **v1.4 real-world readiness** — org-uploaded policies chunked and authoritative, policy questions answered from the org KB, decoupled ticket worker, safe `migrate_db`, Groq model update (`openai/gpt-oss-20b`), confirm-action and IAM-secret fixes, hermetic tests — 234 tests green, 12/12 live end-to-end checks
 
 ---
 

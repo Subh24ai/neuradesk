@@ -34,6 +34,32 @@ _ENDPOINT_MAP: dict[str, str] = {
     "account_delete": "/iam/delete-account",
 }
 
+# Reply used when the action ran but the org's knowledge base had no article
+# for it. Accurate to what the enterprise call actually did — no invented policy.
+_STANDARD_REPLY: dict[str, str] = {
+    "password_reset": "Your password reset has been started, {username}. Check your email for a temporary password and change it at your next sign-in.",
+    "access_request": "Your access request has been processed, {username}. Sign out and back in if the new access doesn't appear.",
+    "software_install": "Your software request has been sent to your manager for approval, {username}.",
+    "leave_approval": "Your leave request has been recorded, {username}.",
+    "incident_report": "An incident has been opened and routed to the support team, {username}.",
+    "access_revoke": "The requested access removal has been completed, {username}.",
+    "account_lock": "The requested account lock has been applied, {username}.",
+    "account_delete": "The requested account deletion has been completed, {username}.",
+}
+
+
+def _render(template: str, values: dict[str, str]) -> str:
+    """Substitute only known ``{placeholders}``.
+
+    LLM-generated resolution text can contain stray braces; ``str.format`` would
+    raise on them and crash the node, so unknown braces are left untouched.
+    """
+    out = template
+    for key, value in values.items():
+        out = out.replace("{" + key + "}", value)
+    return out
+
+
 _PRIORITY_TO_SEVERITY: dict[str, str] = {
     "CRITICAL": "P1",
     "HIGH": "P2",
@@ -199,8 +225,32 @@ async def action_node(state: TicketState) -> TicketState:
 
     log.info("action_node.start", ticket_id=state.get("ticket_id"), intent=intent)
 
-    # 1. Unknown category → escalate without any API call.
+    # 1. Unknown category → no enterprise action exists for it. If the org's
+    #    knowledge base answered it (a policy / how-to question) and the input
+    #    isn't flagged as suspicious, reply with that grounded answer — no API
+    #    call is made. Otherwise escalate.
     if intent == "unknown":
+        confidence_u = state.get("confidence")
+        if (
+            state.get("kb_grounded")
+            and state.get("resolution_template")
+            and confidence_u is not None
+            and confidence_u >= _CONFIDENCE_THRESHOLD
+        ):
+            answer = _render(
+                state["resolution_template"],  # type: ignore[arg-type]
+                {"username": state.get("user_id") or "there", "user_id": state.get("user_id") or ""},
+            )
+            log.info("action_node.knowledge_answer", ticket_id=state.get("ticket_id"))
+            return {
+                **state,
+                "action_taken": "knowledge_answer",
+                "action_result": None,
+                "resolution": answer,
+                "escalated": False,
+                "status": "resolved",
+                "error": None,
+            }  # type: ignore[return-value]
         log.warning("action_node.unknown_intent", ticket_id=state.get("ticket_id"))
         return {
             **state,
@@ -268,9 +318,14 @@ async def action_node(state: TicketState) -> TicketState:
             continue  # identity is authoritative — never templated from text
         fmt[k] = str(v) if v is not None else "unknown"
 
-    resolution: str = (
-        state.get("resolution_template") or "Action completed."
-    ).format(**fmt)
+    # Grounded KB answer when the org's documents covered it; otherwise an
+    # accurate standard reply for the action that was performed.
+    template: str = (
+        state.get("resolution_template")
+        if state.get("kb_grounded") and state.get("resolution_template")
+        else _STANDARD_REPLY.get(intent, "Your request has been completed, {username}.")
+    )  # type: ignore[assignment]
+    resolution: str = _render(template, fmt)
 
     # 6. Call the enterprise API for the mapped intent.
     endpoint: str | None = _ENDPOINT_MAP.get(intent)

@@ -44,6 +44,7 @@ class TicketState(TypedDict):
     # ── Knowledge node output ─────────────────────────────────────────────
     retrieved_chunks: Optional[list[RetrievedChunk]]
     resolution_template: Optional[str]
+    kb_grounded: Optional[bool]             # True when a KB passage cleared the relevance threshold
 
     # ── Action node output ────────────────────────────────────────────────
     action_taken: Optional[str]             # e.g. "password_reset_executed"
