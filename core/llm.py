@@ -1,7 +1,6 @@
 """LangChain chat-model factory — select provider via LLM_PROVIDER env var."""
 
 import os
-from typing import Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
 

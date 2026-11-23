@@ -2,8 +2,9 @@
 
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Generator, Optional
+from collections.abc import Generator
+from datetime import UTC, datetime
+from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, Field
@@ -51,7 +52,7 @@ class OrganizationModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -63,15 +64,15 @@ class OrgConfigModel(Base):
     org_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("organizations.id"), primary_key=True
     )
-    itsm_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    hr_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    iam_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    smtp_host: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    smtp_user: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    smtp_pass: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    smtp_port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    custom_categories: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    slack_webhook_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    itsm_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    hr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    iam_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_pass: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    custom_categories: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class UserModel(Base):
@@ -84,15 +85,15 @@ class UserModel(Base):
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    org_id: Mapped[Optional[str]] = mapped_column(
+    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("organizations.id"), nullable=True, index=True
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    otp: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
-    otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    otp: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Failed OTP verification attempts for the current code — locks after a cap
     # to stop brute-forcing the 6-digit code. Reset whenever a new OTP is issued.
     otp_attempts: Mapped[int] = mapped_column(
@@ -101,7 +102,7 @@ class UserModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -114,34 +115,34 @@ class TicketModel(Base):
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=False, index=True
     )
-    org_id: Mapped[Optional[str]] = mapped_column(
+    org_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("organizations.id"), nullable=True, index=True
     )
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
-    raw_image_b64: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_image_b64: Mapped[str | None] = mapped_column(Text, nullable=True)
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
-    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    intent: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    resolution: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    escalation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    admin_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    assignee_group: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    priority: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    resolved_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    trace_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    intent: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    escalation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assignee_group: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    trace_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 
@@ -158,16 +159,16 @@ class OrgKnowledgeDocModel(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    source_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, default="manual")
-    file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(20), nullable=True, default="manual")
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 
@@ -184,12 +185,12 @@ class InviteModel(Base):
     )
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    note: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    used_by_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
 
@@ -201,7 +202,7 @@ class TokenBlocklistModel(Base):
     jti: Mapped[str] = mapped_column(String(36), primary_key=True)
     revoked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -217,7 +218,7 @@ class UserSessionModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -239,7 +240,7 @@ class TicketCommentModel(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_admin_note: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
 
@@ -258,7 +259,7 @@ class AdminEventModel(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -282,9 +283,9 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
     first_name: str = Field(..., min_length=1, max_length=100, description="Given name")
     last_name: str = Field(..., min_length=1, max_length=100, description="Family name")
-    org_name: Optional[str] = Field(None, min_length=2, max_length=100, description="Create a new org (caller becomes admin)")
-    invite_code: Optional[str] = Field(None, description="Join an existing org by invite code")
-    org_creation_token: Optional[str] = Field(None, description="Platform token required when ORG_CREATION_SECRET is set")
+    org_name: str | None = Field(None, min_length=2, max_length=100, description="Create a new org (caller becomes admin)")
+    invite_code: str | None = Field(None, description="Join an existing org by invite code")
+    org_creation_token: str | None = Field(None, description="Platform token required when ORG_CREATION_SECRET is set")
 
 
 class LoginRequest(BaseModel):
@@ -344,7 +345,7 @@ class OtpSentResponse(BaseModel):
 
     message: str
     email: str
-    dev_otp: Optional[str] = None  # populated only in development when SMTP is not configured
+    dev_otp: str | None = None  # populated only in development when SMTP is not configured
 
 
 # ── Org schemas ───────────────────────────────────────────────────────────────
@@ -366,8 +367,8 @@ class MemberResponse(BaseModel):
 
     id: str
     email: str
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
     role: str
     created_at: datetime
 
@@ -391,10 +392,10 @@ class TicketCreateRequest(BaseModel):
     """POST /tickets body."""
 
     text: str = Field(..., min_length=1, max_length=_MAX_TEXT_CHARS, description="Free-text ticket description")
-    image_b64: Optional[str] = Field(
+    image_b64: str | None = Field(
         None, max_length=_MAX_IMAGE_B64_CHARS, description="Base-64 encoded screenshot (max ~1 MB decoded)"
     )
-    user_id: Optional[str] = Field(None, description="Resolved from JWT — ignored if provided")
+    user_id: str | None = Field(None, description="Resolved from JWT — ignored if provided")
 
 
 class TicketResponse(BaseModel):
@@ -402,17 +403,17 @@ class TicketResponse(BaseModel):
 
     ticket_id: str
     status: str
-    raw_text: Optional[str] = None
-    category: Optional[str] = None
-    confidence: Optional[float] = None
-    resolution: Optional[str] = None
-    escalation_reason: Optional[str] = None
-    admin_note: Optional[str] = None
-    assignee_group: Optional[str] = None
-    priority: Optional[str] = None
-    user_email: Optional[str] = None
-    image_url: Optional[str] = None
-    trace_url: Optional[str] = None
+    raw_text: str | None = None
+    category: str | None = None
+    confidence: float | None = None
+    resolution: str | None = None
+    escalation_reason: str | None = None
+    admin_note: str | None = None
+    assignee_group: str | None = None
+    priority: str | None = None
+    user_email: str | None = None
+    image_url: str | None = None
+    trace_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -431,7 +432,7 @@ class TicketResolveRequest(BaseModel):
     """PATCH /admin/tickets/{ticket_id} body."""
 
     status: str = Field("resolved", pattern="^(resolved|escalated|pending)$")
-    admin_note: Optional[str] = Field(None, max_length=2000)
+    admin_note: str | None = Field(None, max_length=2000)
 
 
 # ── Knowledge base schemas ────────────────────────────────────────────────────
@@ -449,8 +450,8 @@ class KnowledgeDocResponse(BaseModel):
     id: str
     title: str
     content: str
-    source_type: Optional[str] = "manual"
-    file_name: Optional[str] = None
+    source_type: str | None = "manual"
+    file_name: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -513,7 +514,7 @@ class SessionListResponse(BaseModel):
 class InviteCreateRequest(BaseModel):
     """POST /admin/invites body."""
 
-    note: Optional[str] = Field(None, max_length=200, description="Optional label for this invite (e.g. 'For Alice from Marketing')")
+    note: str | None = Field(None, max_length=200, description="Optional label for this invite (e.g. 'For Alice from Marketing')")
     expires_days: int = Field(7, ge=1, le=365, description="Days until the invite expires")
 
 
@@ -522,10 +523,10 @@ class InviteResponse(BaseModel):
 
     id: str
     code: str
-    note: Optional[str] = None
-    used_at: Optional[datetime] = None
-    used_by_email: Optional[str] = None
-    expires_at: Optional[datetime] = None
+    note: str | None = None
+    used_at: datetime | None = None
+    used_by_email: str | None = None
+    expires_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

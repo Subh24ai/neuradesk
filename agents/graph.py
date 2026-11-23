@@ -11,7 +11,7 @@ The conditional edge after action_node routes to escalation_node when:
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
@@ -60,7 +60,9 @@ def get_checkpointer() -> Any | None:
     if not db_url or db_url.startswith("sqlite"):
         return None
     try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore[import-untyped]
+        from langgraph.checkpoint.postgres.aio import (
+            AsyncPostgresSaver,  # type: ignore[import-untyped]
+        )
 
         return AsyncPostgresSaver.from_conn_string(db_url)
     except ImportError:
@@ -120,7 +122,7 @@ def build_initial_state(
     return {  # type: ignore[return-value]
         "ticket_id": str(uuid.uuid4()),
         "user_id": user_id,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "trace_id": str(uuid.uuid4()),
         "channel": channel,  # type: ignore[arg-type]
         "raw_text": raw_text,

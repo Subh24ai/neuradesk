@@ -16,6 +16,7 @@ if config.config_file_name is not None:
 
 # Wire in the app's ORM models for autogenerate support
 from api.models import Base  # noqa: E402
+
 target_metadata = Base.metadata
 
 # Pull the DB URL from the environment — never hardcoded here

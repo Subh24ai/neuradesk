@@ -4,14 +4,10 @@ import asyncio
 import io
 import json
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 
 import structlog
-
-from core.config import get_settings
-
-_cfg = get_settings()
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
@@ -66,7 +62,7 @@ def _publish_sse(org_id: str, event_data: dict) -> None:
     try:
         db.add(AdminEventModel(org_id=org_id, payload=json.dumps(event_data)))
         # Opportunistic prune of old, already-delivered events.
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=_SSE_EVENT_TTL_SECONDS)
+        cutoff = datetime.now(UTC) - timedelta(seconds=_SSE_EVENT_TTL_SECONDS)
         db.query(AdminEventModel).filter(AdminEventModel.created_at < cutoff).delete()
         db.commit()
     except Exception:
@@ -85,8 +81,8 @@ def _require_admin(user: UserModel) -> None:
         )
 
 
-def _orm_to_response(ticket: TicketModel, db: Optional[Session] = None) -> TicketResponse:
-    user_email: Optional[str] = None
+def _orm_to_response(ticket: TicketModel, db: Session | None = None) -> TicketResponse:
+    user_email: str | None = None
     if db is not None:
         user = db.get(UserModel, ticket.user_id)
         user_email = user.email if user else None
@@ -117,7 +113,7 @@ def _orm_to_response(ticket: TicketModel, db: Optional[Session] = None) -> Ticke
 def list_org_tickets(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    status_filter: Optional[str] = Query(None, alias="status"),
+    status_filter: str | None = Query(None, alias="status"),
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketListResponse:
@@ -197,7 +193,7 @@ def resolve_ticket(
         if req.status == "resolved" and not ticket.resolution:
             ticket.resolution = req.admin_note
     ticket.resolved_by = current_user.id
-    ticket.updated_at = datetime.now(timezone.utc)
+    ticket.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(ticket)
 
@@ -375,7 +371,7 @@ def _extract_text(filename: str, raw: bytes) -> str:
 )
 async def upload_kb_doc(
     file: UploadFile = File(..., description="PDF, TXT, MD, or DOCX file — max 10 MB"),
-    title: Optional[str] = Form(None, max_length=255),
+    title: str | None = Form(None, max_length=255),
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> KnowledgeDocResponse:
@@ -496,7 +492,7 @@ def create_invite(
         code=secrets.token_urlsafe(20),
         created_by=current_user.id,
         note=req.note or None,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=req.expires_days),
+        expires_at=datetime.now(UTC) + timedelta(days=req.expires_days),
     )
     db.add(invite)
     db.commit()
@@ -625,13 +621,13 @@ async def admin_stream(
 
     payload = _decode_token(token)  # raises 401 if invalid or expired
 
-    jti: Optional[str] = payload.get("jti")
+    jti: str | None = payload.get("jti")
     if jti and db.get(TokenBlocklistModel, jti):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
         )
-    user_id: Optional[str] = payload.get("sub")
+    user_id: str | None = payload.get("sub")
     user = db.get(UserModel, user_id) if user_id else None
     if not user:
         raise HTTPException(

@@ -21,7 +21,6 @@ import statistics
 import sys
 import time
 import uuid
-from typing import Optional
 
 import httpx
 
@@ -94,7 +93,7 @@ async def submit_ticket(
     token: str,
     text: str,
     semaphore: asyncio.Semaphore,
-) -> Optional[float]:
+) -> float | None:
     """Submit one ticket and return its wall-clock latency in seconds."""
     async with semaphore:
         t0 = time.perf_counter()

@@ -5,6 +5,7 @@ Run once after deploying the OTP auth feature:
 """
 
 from sqlalchemy import text
+
 from api.models import engine
 
 _MIGRATIONS = [

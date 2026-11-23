@@ -7,7 +7,6 @@ so ticket creation is never blocked by storage errors.
 
 import base64
 import os
-from typing import Optional
 
 import structlog
 
@@ -16,7 +15,7 @@ log = structlog.get_logger(__name__)
 _BUCKET_NAME: str = os.getenv("GCS_BUCKET", "")
 
 
-def upload_image_b64(ticket_id: str, image_b64: str) -> Optional[str]:
+def upload_image_b64(ticket_id: str, image_b64: str) -> str | None:
     """Upload base64-encoded image to GCS; return public URL or None on failure."""
     if not _BUCKET_NAME:
         return None

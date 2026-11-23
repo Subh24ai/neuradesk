@@ -13,7 +13,7 @@ import os
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -76,7 +76,7 @@ def _envelope(action: str, destructive: bool, result: dict[str, Any]) -> dict[st
         "action": action,
         "destructive": destructive,
         "result": result,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -155,7 +155,7 @@ async def reset_password(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "RESET_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/itsm/reset-password", token, req.model_dump(),
@@ -195,7 +195,7 @@ async def provision_access(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "PROVISION_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/itsm/provision-access", token, req.model_dump(),
@@ -236,7 +236,7 @@ async def approve_leave(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "LEAVE_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/hr/approve-leave", token, req.model_dump(),
@@ -278,7 +278,7 @@ async def create_incident(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "INCIDENT_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/itsm/create-incident", token, req.model_dump(),
@@ -318,7 +318,7 @@ async def notify_manager(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "NOTIFY_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/itsm/notify-manager", token, req.model_dump(),

@@ -5,17 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 import threading
+import time
 from pathlib import Path
-from typing import Optional
 
+import faiss  # type: ignore[import-untyped]
 import numpy as np
 import structlog
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
-
-import faiss  # type: ignore[import-untyped]
 
 from agents.state import RetrievedChunk
 from core.config import get_settings
@@ -171,7 +169,7 @@ class HybridRetriever:
         ce_scores: list[float] = self._cross_encoder.predict(
             [(query, content) for _, content in candidates]
         ).tolist()
-        ranked = sorted(zip(candidates, ce_scores), key=lambda x: x[1], reverse=True)
+        ranked = sorted(zip(candidates, ce_scores, strict=False), key=lambda x: x[1], reverse=True)
         return [
             {"source": source, "content": content, "score": float(score)}
             for (source, content), score in ranked[:top_k]
@@ -329,14 +327,14 @@ class HybridRetriever:
             log.warning("retriever.reload_failed", error=str(exc))
 
     @classmethod
-    def get(cls) -> "HybridRetriever":
+    def get(cls) -> HybridRetriever:
         """Return the module-level singleton, initialising it on first call."""
         return get_retriever()
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 
-_retriever: Optional[HybridRetriever] = None
+_retriever: HybridRetriever | None = None
 _init_lock: threading.Lock = threading.Lock()
 
 

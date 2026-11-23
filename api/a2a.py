@@ -17,8 +17,9 @@ import os
 import secrets
 import threading
 import uuid
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -127,7 +128,7 @@ def _run_knowledge_query(query: str) -> tuple[str, list[dict[str, Any]]]:
     state: TicketState = {  # type: ignore[assignment]
         "ticket_id": str(uuid.uuid4()),
         "user_id": "a2a-caller",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "trace_id": str(uuid.uuid4()),
         "channel": "text",
         "raw_text": query,
@@ -161,7 +162,7 @@ def _run_knowledge_query(query: str) -> tuple[str, list[dict[str, Any]]]:
 
 def _now_iso() -> str:
     """Return current UTC time as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Agent Card endpoint ────────────────────────────────────────────────────────
@@ -363,7 +364,7 @@ async def task_send_subscribe(
                 status, answer, chunks = await asyncio.wait_for(
                     result_queue.get(), timeout=_A2A_QUERY_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.error("a2a.task_subscribe.timeout", task_id=task_id, timeout=_A2A_QUERY_TIMEOUT)
                 yield _sse(
                     {

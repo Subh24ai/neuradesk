@@ -4,8 +4,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -13,15 +12,13 @@ import structlog
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from sqlalchemy.orm import Session
 
 from api.email import send_otp_email  # noqa: F401 — re-exported for callers that mock it
-from core.config import get_settings
-
 from api.models import (
     ForgotPasswordRequest,
     InviteModel,
@@ -40,6 +37,7 @@ from api.models import (
     UserSessionModel,
     get_db,
 )
+from core.config import get_settings
 
 load_dotenv()
 
@@ -101,7 +99,7 @@ def create_access_token(
     first_name: str = "", last_name: str = "",
 ) -> str:
     """Create a signed HS256 JWT valid for 8 hours."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": user_id,
         "jti": str(uuid.uuid4()),  # unique token ID — stored in blocklist on logout
@@ -120,16 +118,16 @@ def _decode_token(token: str) -> dict:
     """Decode and validate a JWT; raise 401 HTTPException on any failure."""
     try:
         return jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
-    except ExpiredSignatureError:
+    except ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Token has expired", "code": "TOKEN_EXPIRED"},
-        )
-    except InvalidTokenError:
+        ) from exc
+    except InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
-        )
+        ) from exc
 
 
 # ── Session tracking ─────────────────────────────────────────────────────────
@@ -147,7 +145,7 @@ def _record_session(token_str: str, db: Session) -> None:
         exp = payload.get("exp")
         if not (jti and user_id and exp):
             return
-        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+        expires_at = datetime.fromtimestamp(exp, tz=UTC)
         db.add(UserSessionModel(jti=jti, user_id=user_id, expires_at=expires_at))
         # flush so errors surface before the outer commit
         db.flush()
@@ -192,14 +190,14 @@ def get_current_user(
     """Resolve Bearer JWT to a UserModel; raise 401 if missing, invalid, expired, or revoked."""
     payload = _decode_token(credentials.credentials)
 
-    jti: Optional[str] = payload.get("jti")
+    jti: str | None = payload.get("jti")
     if jti and db.get(TokenBlocklistModel, jti):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
         )
 
-    user_id: Optional[str] = payload.get("sub")
+    user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -270,15 +268,18 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 
     # Org creation requires a token only when ORG_CREATION_SECRET is configured.
     # If the secret is not set, org creation is open to anyone.
-    if req.org_name and _ORG_CREATION_SECRET:
-        if not req.org_creation_token or req.org_creation_token != _ORG_CREATION_SECRET:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "Organisation creation requires a valid admin token",
-                    "code": "ORG_TOKEN_REQUIRED",
-                },
-            )
+    if (
+        req.org_name
+        and _ORG_CREATION_SECRET
+        and not secrets.compare_digest(req.org_creation_token or "", _ORG_CREATION_SECRET)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "Organisation creation requires a valid admin token",
+                "code": "ORG_TOKEN_REQUIRED",
+            },
+        )
 
     if _ENV == "production" and _is_personal_email(req.email):
         raise HTTPException(
@@ -315,10 +316,10 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
                     detail={"error": "This invite has already been used", "code": "INVITE_USED"},
                 )
             if invite.expires_at and (
-                invite.expires_at.replace(tzinfo=timezone.utc)
+                invite.expires_at.replace(tzinfo=UTC)
                 if invite.expires_at.tzinfo is None
                 else invite.expires_at
-            ) < datetime.now(timezone.utc):
+            ) < datetime.now(UTC):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={"error": "This invite has expired", "code": "INVITE_EXPIRED"},
@@ -330,7 +331,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
                     detail={"error": "Organisation not found", "code": "ORG_NOT_FOUND"},
                 )
             # Mark invite as consumed — prevents any reuse, including concurrent attempts
-            invite.used_at = datetime.now(timezone.utc)
+            invite.used_at = datetime.now(UTC)
             invite.used_by_email = req.email
             role = "member"
         else:
@@ -354,7 +355,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             role=role,
             is_verified=False,
             otp=otp,
-            otp_expires_at=datetime.now(timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINUTES),
+            otp_expires_at=datetime.now(UTC) + timedelta(minutes=_OTP_EXPIRE_MINUTES),
         )
         db.add(user)
 
@@ -362,13 +363,13 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         # The user record never lands in the DB if email can't be sent.
         try:
             send_otp_email(req.email, otp)
-        except Exception:
+        except Exception as exc:
             db.rollback()
             log.exception("auth.register.email_failed", email=req.email)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"error": "Failed to send verification email", "code": "EMAIL_FAILED"},
-            )
+            ) from exc
 
         db.commit()
         db.refresh(user)
@@ -382,9 +383,9 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Registration failed. Please try again.", "code": "REGISTER_FAILED"},
-        )
+        ) from exc
 
-    dev_otp_hint: Optional[str] = None
+    dev_otp_hint: str | None = None
     if _ENV != "production" and not _smtp_configured():
         dev_otp_hint = otp
         log.warning("auth.register.dev_otp", email=req.email, otp=otp,
@@ -424,9 +425,9 @@ def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(ge
 
     expires = user.otp_expires_at
     if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
 
-    if datetime.now(timezone.utc) > expires:
+    if datetime.now(UTC) > expires:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "OTP has expired — request a new one", "code": "OTP_EXPIRED"},
@@ -486,21 +487,21 @@ def resend_otp(request: Request, req: OtpResendRequest, db: Session = Depends(ge
 
     otp = generate_otp()
     user.otp = otp
-    user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
+    user.otp_expires_at = datetime.now(UTC) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
     user.otp_attempts = 0
     db.commit()
 
     try:
         send_otp_email(req.email, otp)
-    except Exception:
+    except Exception as exc:
         log.exception("auth.resend_otp.email_failed", email=req.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Failed to send email", "code": "EMAIL_FAILED"},
-        )
+        ) from exc
 
     log.info("auth.resend_otp", email=req.email)
-    dev_otp_hint: Optional[str] = otp if _ENV != "production" and not _smtp_configured() else None
+    dev_otp_hint: str | None = otp if _ENV != "production" and not _smtp_configured() else None
     if dev_otp_hint:
         log.warning("auth.resend_otp.dev_otp", email=req.email, otp=otp)
     return OtpSentResponse(message="OTP sent", email=req.email, dev_otp=dev_otp_hint)
@@ -514,12 +515,12 @@ def resend_otp(request: Request, req: OtpResendRequest, db: Session = Depends(ge
 @_limiter.limit("5/minute")
 def forgot_password(request: Request, req: ForgotPasswordRequest, db: Session = Depends(get_db)) -> OtpSentResponse:
     """Generate a password-reset OTP and email it. Always returns 200 to avoid user enumeration."""
-    dev_otp_hint: Optional[str] = None
+    dev_otp_hint: str | None = None
     user = db.query(UserModel).filter(UserModel.email == req.email).first()
     if user:
         otp = generate_otp()
         user.otp = otp
-        user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
+        user.otp_expires_at = datetime.now(UTC) + timedelta(minutes=_OTP_EXPIRE_MINUTES)
         user.otp_attempts = 0
         db.commit()
         try:
@@ -550,8 +551,8 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
 
     expires = user.otp_expires_at
     if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires:
+        expires = expires.replace(tzinfo=UTC)
+    if datetime.now(UTC) > expires:
         raise invalid
 
     if (user.otp_attempts or 0) >= _MAX_OTP_ATTEMPTS:
@@ -597,7 +598,7 @@ def refresh_token(
 ) -> TokenResponse:
     """Validate the current Bearer token and issue a new 8-hour token. Use this before expiry."""
     payload = _decode_token(credentials.credentials)
-    user_id: Optional[str] = payload.get("sub")
+    user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -639,7 +640,7 @@ def change_password(
 ) -> TokenResponse:
     """Verify the current password, set the new one, and return a fresh token."""
     payload = _decode_token(credentials.credentials)
-    user_id: Optional[str] = payload.get("sub")
+    user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -657,13 +658,13 @@ def change_password(
             detail={"error": "Current password is incorrect", "code": "WRONG_PASSWORD"},
         )
     user.hashed_password = hash_password(req.new_password)
-    old_jti: Optional[str] = payload.get("jti")
+    old_jti: str | None = payload.get("jti")
     if old_jti:
         exp = payload.get("exp")
         expires_at = (
-            datetime.fromtimestamp(exp, tz=timezone.utc)
+            datetime.fromtimestamp(exp, tz=UTC)
             if exp
-            else datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
+            else datetime.now(UTC) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
         )
         db.add(TokenBlocklistModel(jti=old_jti, expires_at=expires_at))
     db.commit()
@@ -685,13 +686,13 @@ def logout(
 ) -> dict:
     """Add the token's jti to the blocklist. Idempotent — safe to call multiple times."""
     payload = _decode_token(credentials.credentials)
-    jti: Optional[str] = payload.get("jti")
+    jti: str | None = payload.get("jti")
     if jti and not db.get(TokenBlocklistModel, jti):
         exp = payload.get("exp")
         expires_at = (
-            datetime.fromtimestamp(exp, tz=timezone.utc)
+            datetime.fromtimestamp(exp, tz=UTC)
             if exp
-            else datetime.now(timezone.utc) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
+            else datetime.now(UTC) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
         )
         db.add(TokenBlocklistModel(jti=jti, expires_at=expires_at))
         db.commit()
@@ -713,15 +714,15 @@ def list_sessions(
     The is_current flag is True for the session matching the caller's own JTI.
     """
     payload = _decode_token(credentials.credentials)
-    caller_jti: Optional[str] = payload.get("jti")
-    user_id: Optional[str] = payload.get("sub")
+    caller_jti: str | None = payload.get("jti")
+    user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = (
         db.query(UserSessionModel)
         .filter(
@@ -769,8 +770,8 @@ def revoke_session(
     Returns 409 if the caller tries to revoke their own current session (use /auth/logout instead).
     """
     payload = _decode_token(credentials.credentials)
-    caller_jti: Optional[str] = payload.get("jti")
-    user_id: Optional[str] = payload.get("sub")
+    caller_jti: str | None = payload.get("jti")
+    user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -827,4 +828,4 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) ->
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Authentication failed. Please try again.", "code": "LOGIN_FAILED"},
-        )
+        ) from exc

@@ -36,8 +36,8 @@ if not os.getenv("GROQ_API_KEY"):
 
 try:
     from datasets import Dataset
-    from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_groq import ChatGroq
+    from langchain_huggingface import HuggingFaceEmbeddings
     from ragas import evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
@@ -55,7 +55,7 @@ try:
 except Exception:
     _RUN_CONFIG = None  # type: ignore[assignment]
 
-from rag.retriever import get_retriever
+from rag.retriever import get_retriever  # noqa: E402 — needs sys.path + env set above
 
 # ── 10 QA pairs — 2 per resolvable ticket category ───────────────────────────
 # Kept at 10 (not 20) to stay within Groq free-tier rate limits.

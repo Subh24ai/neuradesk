@@ -15,8 +15,6 @@ import json
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _MOCK_QUERY_RESULT = (

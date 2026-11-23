@@ -18,7 +18,7 @@ import os
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -69,7 +69,7 @@ def _envelope(action: str, result: dict[str, Any]) -> dict[str, Any]:
         "action": action,
         "destructive": True,
         "result": result,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -126,7 +126,7 @@ async def revoke_access(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "REVOKE_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/iam/revoke-access", token, req.model_dump(),
@@ -159,7 +159,7 @@ async def lock_account(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "LOCK_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/iam/lock-account", token, req.model_dump(),
@@ -208,7 +208,7 @@ async def delete_account(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": str(exc), "code": "DELETE_FAILED"},
-        )
+        ) from exc
     finally:
         await log_audit(
             "/iam/delete-account", token, req.model_dump(),

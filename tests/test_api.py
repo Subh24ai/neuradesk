@@ -2,8 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
-
 
 def _register_and_verify(
     client, email: str, password: str, org_name: str = "Test Org"

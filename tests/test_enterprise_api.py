@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 import services.audit_log as audit_mod
 
 

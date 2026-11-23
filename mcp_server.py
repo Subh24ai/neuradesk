@@ -11,8 +11,8 @@ client launches it locally over stdio, it carries no bearer auth (unlike the A2A
 and enterprise APIs).
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from mcp.server.fastmcp import FastMCP
 

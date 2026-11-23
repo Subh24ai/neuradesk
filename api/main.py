@@ -4,13 +4,22 @@ import asyncio
 import os
 import time
 import uuid
-from contextlib import asynccontextmanager, nullcontext
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Awaitable, Callable, Optional
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager, nullcontext, suppress
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,20 +29,16 @@ from slowapi.util import get_remote_address
 from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
-from agents.graph import build_graph, build_initial_state, get_checkpointer, graph as langgraph_graph
-from storage.gcs import upload_image_b64
-from tracing.langsmith import get_trace_url
+from agents.graph import build_graph, build_initial_state, get_checkpointer
+from agents.graph import graph as langgraph_graph
 from api.a2a import router as a2a_router
-from api.admin import admin_router, _publish_sse
-from api.auth import auth_router, _decode_token, get_current_user
+from api.admin import _publish_sse, admin_router
+from api.auth import _decode_token, auth_router, get_current_user
 from api.email import send_ticket_notification
-from api.org import org_router
-from core.config import get_settings
-from core.dspy_config import configure_dspy
-
-_cfg = get_settings()
 from api.models import (
     Base,
+    CommentListResponse,
+    CommentResponse,
     OrganizationModel,
     OrgConfigModel,
     OrgKnowledgeDocModel,
@@ -44,11 +49,16 @@ from api.models import (
     TicketModel,
     TicketResponse,
     UserModel,
-    CommentListResponse,
-    CommentResponse,
     engine,
     get_db,
 )
+from api.org import org_router
+from core.config import get_settings
+from core.dspy_config import configure_dspy
+from storage.gcs import upload_image_b64
+from tracing.langsmith import get_trace_url
+
+_cfg = get_settings()
 
 load_dotenv()
 log = structlog.get_logger(__name__)
@@ -87,7 +97,7 @@ def _recover_stale_tickets() -> None:
     'pending'    → no runner ever claimed it (worker down).
     'processing' → a runner claimed it but died mid-run (crash / instance recycle).
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_GRAPH_EXECUTION_TIMEOUT)
+    cutoff = datetime.now(UTC) - timedelta(seconds=_GRAPH_EXECUTION_TIMEOUT)
     db = SessionLocal()
     try:
         stale = (
@@ -163,7 +173,7 @@ async def _pending_ticket_worker() -> None:
     while True:
         await asyncio.sleep(_PENDING_TICKET_POLL_SECONDS)
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(seconds=_PENDING_TICKET_GRACE_SECONDS)
+            cutoff = datetime.now(UTC) - timedelta(seconds=_PENDING_TICKET_GRACE_SECONDS)
             db = SessionLocal()
             try:
                 ids = [
@@ -213,10 +223,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             log.info("app.shutdown")
             for task in (recovery_task, faiss_reload_task, pending_worker_task):
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
 
 
 app = FastAPI(
@@ -353,7 +361,7 @@ def list_tickets(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Request could not be processed.", "code": "TICKET_LIST_FAILED"},
-        )
+        ) from exc
 
 
 @app.post(
@@ -379,7 +387,7 @@ def create_ticket(
     """
     ticket_id = str(uuid.uuid4())
     try:
-        image_url: Optional[str] = None
+        image_url: str | None = None
         if req.image_b64:
             image_url = upload_image_b64(ticket_id, req.image_b64)
 
@@ -404,7 +412,7 @@ def create_ticket(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Request could not be processed.", "code": "TICKET_CREATE_FAILED", "ticket_id": ticket_id},
-        )
+        ) from exc
 
 
 @app.get(
@@ -438,7 +446,7 @@ def get_ticket(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Request could not be processed.", "code": "TICKET_GET_FAILED", "ticket_id": ticket_id},
-        )
+        ) from exc
 
 
 @app.post(
@@ -618,7 +626,7 @@ def _claim_ticket(ticket_id: str, from_status: str = "pending") -> bool:
 
 async def _process_ticket(
     ticket_id: str,
-    on_node: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+    on_node: Callable[[str, dict], Awaitable[None]] | None = None,
     resume_confirmed: bool = False,
 ) -> dict:
     """Run the agent graph for an already-claimed ticket, persist, and notify.
@@ -671,7 +679,7 @@ async def _process_ticket(
 
         try:
             await asyncio.wait_for(_run(), timeout=_GRAPH_EXECUTION_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.error("ticket.process_timeout", ticket_id=ticket_id)
             ticket.status = "failed"
             ticket.escalation_reason = "Graph execution timed out"
@@ -683,7 +691,7 @@ async def _process_ticket(
         except Exception as exc:
             log.exception("ticket.process_error", ticket_id=ticket_id, error=str(exc))
 
-        trace_url: Optional[str] = get_trace_url() or final_state.get("trace_url")
+        trace_url: str | None = get_trace_url() or final_state.get("trace_url")
         if not final_state:
             ticket.status = "failed"
             ticket.escalation_reason = "Graph execution failed before any node completed"
@@ -762,14 +770,12 @@ async def _observe_ticket(ticket_id: str, websocket: WebSocket) -> dict:
         finally:
             db.close()
         if fields["status"] in _TERMINAL_STATUSES:
-            try:
+            with suppress(Exception):
                 await websocket.send_json({
                     "node": "action_node",
                     "status": "done",
                     "output": {k: str(v) for k, v in fields.items() if v is not None},
                 })
-            except Exception:
-                pass
             return fields
         await asyncio.sleep(0.4)
     return {"status": "failed"}
@@ -817,7 +823,7 @@ async def websocket_ticket(
             payload: dict = await asyncio.wait_for(
                 websocket.receive_json(), timeout=5.0
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await websocket.send_json({"error": "Auth timeout", "code": "WS_AUTH_TIMEOUT"})
             await websocket.close(1008)
             return
@@ -843,7 +849,7 @@ async def websocket_ticket(
         # or it is already done) → observe the outcome from the DB. Either way the
         # ticket is guaranteed to be processed exactly once.
         async def _send_node(node_name: str, node_output: dict) -> None:
-            try:
+            with suppress(Exception):
                 await websocket.send_json({
                     "node": node_name,
                     "status": "done",
@@ -853,8 +859,6 @@ async def websocket_ticket(
                         if k in _STREAM_FIELDS and v is not None
                     },
                 })
-            except Exception:
-                pass
 
         if _claim_ticket(ticket_id):
             result = await _process_ticket(ticket_id, on_node=_send_node)
@@ -880,18 +884,14 @@ async def websocket_ticket(
 
     except WebSocketDisconnect:
         log.info("ws.disconnect", ticket_id=ticket_id)
-    except Exception as exc:
+    except Exception:
         log.exception("ws.error", ticket_id=ticket_id)
-        try:
+        with suppress(Exception):
             await websocket.send_json({"error": "An internal error occurred.", "code": "WS_ERROR"})
-        except Exception:
-            pass
     finally:
         db.close()
-        try:
+        with suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
 
 
 # ── SPA catch-all — must be registered LAST ───────────────────────────────────

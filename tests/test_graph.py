@@ -1,8 +1,9 @@
 """Tests for LangGraph node logic and conditional routing."""
 
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from agents.action_node import action_node
 from agents.graph import _should_escalate, build_initial_state, graph, run_ticket
@@ -17,7 +18,7 @@ def _base_state(**overrides) -> dict:
     base: dict = {
         "ticket_id": "test-ticket-001",
         "user_id": "test-user@corp.com",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "trace_id": "test-trace-001",
         "channel": "text",
         "raw_text": "I forgot my password",

@@ -13,7 +13,7 @@ import json
 import logging
 import logging.handlers
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -117,7 +117,7 @@ async def log_audit(
     via its internal threading lock.
     """
     entry: dict[str, Any] = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "endpoint": endpoint,
         "token_hash": _hash_token(token),
         "request_body": _redact(request_body),

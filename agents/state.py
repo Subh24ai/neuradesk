@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from typing_extensions import TypedDict
 
@@ -26,47 +26,42 @@ class TicketState(TypedDict):
     # ── Raw input ─────────────────────────────────────────────────────────
     channel: Literal["text", "image"]
     raw_text: str                           # original text from user
-    raw_image_b64: Optional[str]            # base-64 encoded image (if channel=="image")
-    extracted_text: Optional[str]           # vision-model OCR output
+    raw_image_b64: str | None            # base-64 encoded image (if channel=="image")
+    extracted_text: str | None           # vision-model OCR output
 
     # ── Intake node output ────────────────────────────────────────────────
-    category: Optional[Literal[
-        "password_reset", "access_request", "software_install",
-        "leave_approval", "incident_report",
-        "access_revoke", "account_lock", "account_delete",
-        "unknown",
-    ]]
-    intent: Optional[str]                   # e.g. "password_reset"
-    priority: Optional[str]                 # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
-    confidence: Optional[float]             # triage confidence 0.0–1.0
-    entities: Optional[dict[str, str]]      # {"username": "jdoe", ...}
+    category: Literal["password_reset", "access_request", "software_install", "leave_approval", "incident_report", "access_revoke", "account_lock", "account_delete", "unknown"] | None
+    intent: str | None                   # e.g. "password_reset"
+    priority: str | None                 # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+    confidence: float | None             # triage confidence 0.0–1.0
+    entities: dict[str, str] | None      # {"username": "jdoe", ...}
 
     # ── Knowledge node output ─────────────────────────────────────────────
-    retrieved_chunks: Optional[list[RetrievedChunk]]
-    resolution_template: Optional[str]
-    kb_grounded: Optional[bool]             # True when a KB passage cleared the relevance threshold
+    retrieved_chunks: list[RetrievedChunk] | None
+    resolution_template: str | None
+    kb_grounded: bool | None             # True when a KB passage cleared the relevance threshold
 
     # ── Action node output ────────────────────────────────────────────────
-    action_taken: Optional[str]             # e.g. "password_reset_executed"
-    action_result: Optional[dict[str, Any]] # raw API response
-    action_confirmed: Optional[bool]        # explicit confirmation for destructive ops
-    resolution: Optional[str]              # human-readable resolution summary
+    action_taken: str | None             # e.g. "password_reset_executed"
+    action_result: dict[str, Any] | None # raw API response
+    action_confirmed: bool | None        # explicit confirmation for destructive ops
+    resolution: str | None              # human-readable resolution summary
 
     # ── Escalation node output ────────────────────────────────────────────
-    escalated: Optional[bool]
-    escalation_reason: Optional[str]
-    assignee_group: Optional[str]
+    escalated: bool | None
+    escalation_reason: str | None
+    assignee_group: str | None
 
     # ── Org context (populated before graph run from DB) ──────────────────
-    org_id: Optional[str]
-    org_name: Optional[str]             # human-readable org name for notifications
-    org_kb_docs: Optional[list[dict]]   # [{title, content}] from OrgKnowledgeDocModel
-    org_api_url: Optional[str]          # per-org enterprise API base URL override
-    support_email: Optional[str]        # support team email for escalation alerts
-    user_email: Optional[str]           # submitting user's email for notifications
-    slack_webhook_url: Optional[str]    # org Slack webhook URL for escalation alerts
+    org_id: str | None
+    org_name: str | None             # human-readable org name for notifications
+    org_kb_docs: list[dict] | None   # [{title, content}] from OrgKnowledgeDocModel
+    org_api_url: str | None          # per-org enterprise API base URL override
+    support_email: str | None        # support team email for escalation alerts
+    user_email: str | None           # submitting user's email for notifications
+    slack_webhook_url: str | None    # org Slack webhook URL for escalation alerts
 
     # ── Graph control ─────────────────────────────────────────────────────
     status: Literal["triaging", "retrieving", "acting", "resolved", "escalated", "awaiting_confirmation"]
-    error: Optional[str]
-    trace_url: Optional[str]
+    error: str | None
+    trace_url: str | None

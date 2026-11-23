@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
 
 from agents.action_node import action_node
 from agents.state import TicketState
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -19,7 +18,7 @@ def _base_state(**overrides) -> TicketState:
     base: dict = {
         "ticket_id": "test-action-001",
         "user_id": "test-user@corp.com",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
         "trace_id": "test-trace-001",
         "channel": "text",
         "raw_text": "I forgot my password and cannot log in",

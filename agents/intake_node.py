@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import structlog
 
@@ -173,8 +172,8 @@ def intake_node(state: TicketState) -> TicketState:
 
     channel: str = state.get("channel") or "text"
     raw_text: str = state.get("raw_text") or ""
-    raw_image_b64: Optional[str] = state.get("raw_image_b64")
-    extracted_text: Optional[str] = None
+    raw_image_b64: str | None = state.get("raw_image_b64")
+    extracted_text: str | None = None
 
     # ── Resume short-circuit ───────────────────────────────────────────────────
     # When the ticket was already triaged (e.g. POST /confirm-action replays the
@@ -185,7 +184,7 @@ def intake_node(state: TicketState) -> TicketState:
     if state.get("category") and state.get("intent"):
         resume_text: str = state.get("extracted_text") or raw_text
         updates = {
-            "created_at": state.get("created_at") or datetime.now(timezone.utc),
+            "created_at": state.get("created_at") or datetime.now(UTC),
             "entities": _extract_entities(resume_text),
             "priority": state.get("priority") or _assign_priority(state["category"], resume_text),
             "status": "retrieving",
@@ -227,7 +226,7 @@ def intake_node(state: TicketState) -> TicketState:
 
     updates: dict = {
         "ticket_id": state.get("ticket_id") or str(uuid.uuid4()),
-        "created_at": state.get("created_at") or datetime.now(timezone.utc),
+        "created_at": state.get("created_at") or datetime.now(UTC),
         "category": category,
         "intent": category,
         "priority": priority,

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.knowledge_node import knowledge_node
 from agents.state import RetrievedChunk, TicketState
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +48,7 @@ def _make_chunks(n: int = 3) -> list[RetrievedChunk]:
     """Return n fake RetrievedChunk dicts."""
     return [
         {
-            "source": f"password-reset-runbook.md",
+            "source": "password-reset-runbook.md",
             "content": f"To reset your password, navigate to the IT Self-Service Portal (chunk {i}).",
             "score": 0.9 - i * 0.1,
         }
