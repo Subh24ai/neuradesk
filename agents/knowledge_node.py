@@ -24,12 +24,20 @@ _RAG_SCORE_THRESHOLD: float = _cfg.rag_score_threshold
 _GROUNDING_CHUNKS: int = 3
 
 _RESOLUTION_SYSTEM_PROMPT: str = (
-    "You are an IT/HR support assistant. "
-    "Given the following knowledge base excerpt, write a "
-    "single clear resolution step for the employee. "
-    "Use {username} as a placeholder where the person's "
-    "name is needed. Be concise — one sentence maximum."
+    "You are an IT/HR support assistant replying directly to the employee who "
+    "asked. Answer their question using ONLY the knowledge base excerpts provided. "
+    "Answer every part of the question (e.g. both 'how many' and 'how do I'), "
+    "include concrete steps, names of tools and deadlines from the excerpts, and "
+    "leave out information they did not ask about. Use at most three short "
+    "sentences, address them as 'you', and never mention their name or email. "
+    "If the excerpts don't answer the question, say so in one sentence. "
+    "Never add anything the excerpts don't state — no invented timelines, emails, "
+    "contacts, statuses or generic advice."
 )
+
+# Sentinel the model returns when the excerpts hold no follow-up guidance for an
+# action NeuraDesk is already performing; the reply then uses the standard text.
+_NO_GUIDANCE: str = "NONE"
 
 
 @traceable(name="knowledge_node", run_type="chain", metadata={"agent": "knowledge", "version": "1.0"})
@@ -101,11 +109,31 @@ def knowledge_node(state: TicketState) -> TicketState:
         # Ground the resolution on the top-ranked chunks (not just the single
         # best) so multi-step answers aren't truncated to one paragraph.
         context: str = "\n\n".join(c["content"] for c in chunks[:_GROUNDING_CHUNKS])
+        # For an actionable request NeuraDesk performs the action itself, so the
+        # reply must add only follow-up guidance — never "submit a ticket" or
+        # steps the system has already done.
+        situation: str = (
+            ""
+            if category == "unknown"
+            else (
+                f"\n\nNeuraDesk is already carrying out this request ({category.replace('_', ' ')}) "
+                "automatically; it has been submitted. Give only follow-up guidance the employee "
+                "needs afterwards (rules, limits, what to do next) that the excerpts state. Do not "
+                "tell them to submit, open or file a ticket or request, and do not repeat steps "
+                f"the system is doing. If the excerpts contain no such guidance, reply exactly {_NO_GUIDANCE}."
+            )
+        )
         response = llm.invoke([
             SystemMessage(content=_RESOLUTION_SYSTEM_PROMPT),
-            HumanMessage(content=context),
+            HumanMessage(
+                content=f"Employee's request:\n{ticket_text}\n\nKnowledge base excerpts:\n{context}{situation}"
+            ),
         ])
         resolution: str = str(response.content).strip()
+        if resolution.strip(" .").upper() == _NO_GUIDANCE:
+            # Nothing in the KB adds to the action's own confirmation message.
+            log.info("knowledge_node.no_followup_guidance", ticket_id=state.get("ticket_id"))
+            return {**state, "retrieved_chunks": chunks, "kb_grounded": False, "status": "acting"}  # type: ignore[return-value]
     except Exception as exc:
         log.exception(
             "knowledge_node.llm_error",
@@ -116,13 +144,8 @@ def knowledge_node(state: TicketState) -> TicketState:
         )
         resolution = top_chunk["content"][:200]
 
-    # Guarantee {username} in resolution_template so the action node can
-    # always substitute the authenticated user's identity into the message.
-    resolution_template: str = (
-        resolution
-        if "{username}" in resolution
-        else f"{resolution} — Ticket raised by {{username}}."
-    )
+    # The reply is shown to the employee as-is (second person, no identifiers).
+    resolution_template: str = resolution
 
     updates: dict = {
         "retrieved_chunks": chunks,

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
+import AccountSettings from './components/AccountSettings'
 import AdminDashboard from './components/AdminDashboard'
 import AgentTimeline from './components/AgentTimeline'
 import LoginForm from './components/LoginForm'
+import { HowItWorks, NeedsActionBanner, RecentTickets } from './components/HomePanels'
 import TicketForm from './components/TicketForm'
-import TicketHistory from './components/TicketHistory'
+import TicketHistory, { type HistoryFilter } from './components/TicketHistory'
+import { SESSION_ENDED_EVENT, type SessionEndReason } from './lib/session'
 
 interface Auth {
   token: string
@@ -133,396 +136,6 @@ const NAV_ITEMS: NavItem[] = [
   },
 ]
 
-// ── Password field ────────────────────────────────────────────────────────────
-
-function PasswordField({
-  id, label, value, onChange, show, onToggleShow,
-  autoComplete, placeholder, minLength, state,
-}: {
-  id: string; label: string; value: string; onChange: (v: string) => void
-  show: boolean; onToggleShow: () => void
-  autoComplete?: string; placeholder?: string; minLength?: number
-  state?: 'error' | 'success' | 'default'
-}) {
-  const borderCls =
-    state === 'error'   ? 'border-red-300 focus:ring-red-400/30 focus:border-red-400' :
-    state === 'success' ? 'border-emerald-300 focus:ring-emerald-400/30 focus:border-emerald-400' :
-    'border-slate-200 hover:border-slate-300 focus:ring-indigo-400/30 focus:border-indigo-400'
-
-  return (
-    <div>
-      <label htmlFor={id} className="block text-[11px] font-semibold text-slate-500 uppercase tracking-widest mb-1.5">
-        {label}
-      </label>
-      <div className="relative">
-        <input
-          id={id}
-          type={show ? 'text' : 'password'}
-          required
-          autoComplete={autoComplete}
-          minLength={minLength}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          aria-invalid={state === 'error'}
-          className={`w-full border rounded-xl px-3.5 py-2.5 pr-20 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 transition-all duration-150 bg-slate-50/40 focus:bg-white ${borderCls}`}
-        />
-        <div className="absolute inset-y-0 right-0 flex items-center gap-0.5 pr-3">
-          {state === 'success' && (
-            <svg className="w-4 h-4 text-emerald-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
-            </svg>
-          )}
-          {state === 'error' && (
-            <svg className="w-4 h-4 text-red-400 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-            </svg>
-          )}
-          <button
-            type="button"
-            onClick={onToggleShow}
-            aria-label={show ? 'Hide password' : 'Show password'}
-            className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
-          >
-            {show ? (
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.002 1.002 0 000-.704 10.978 10.978 0 00-7.84-6.77.75.75 0 10-.36 1.455 9.479 9.479 0 016.46 5.667 8.529 8.529 0 01-2.84 3.567L13.95 13.3A4.002 4.002 0 009.75 9.1l-1.424-1.424A6.002 6.002 0 0110 7.5c3.56 0 6.773 2.44 7.963 5.5a9.478 9.478 0 01-2.33 3.43zM10 4.5c.66 0 1.3.08 1.913.231l-1.52-1.52A10.006 10.006 0 0010 3C6.44 3 3.228 5.44 2.037 8.5a9.99 9.99 0 002.542 3.842L5.93 11a4.002 4.002 0 014.887-5.494L9.22 3.907A10.02 10.02 0 0010 4.5zM8.012 9.37a2.5 2.5 0 002.619 2.619L8.012 9.37z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
-                <path fillRule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-              </svg>
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Password strength ─────────────────────────────────────────────────────────
-
-function getStrength(pw: string): 0 | 1 | 2 | 3 | 4 {
-  if (!pw) return 0
-  let s = 0
-  if (pw.length >= 8) s++
-  if (pw.length >= 12) s++
-  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s++
-  if (/[0-9]/.test(pw)) s++
-  if (/[^A-Za-z0-9]/.test(pw)) s++
-  return Math.min(4, s) as 0 | 1 | 2 | 3 | 4
-}
-
-// ── Account panel ─────────────────────────────────────────────────────────────
-
-interface ActiveSession {
-  jti: string
-  created_at: string
-  expires_at: string
-  is_current: boolean
-}
-
-function AccountPanel({
-  token, email, firstName, lastName, orgName, role, onToast, onPasswordChanged, onLogout,
-}: {
-  token: string
-  email: string
-  firstName: string
-  lastName: string
-  orgName: string
-  role: string
-  onToast: (msg: string, v?: ToastVariant) => void
-  onPasswordChanged: (newToken: string) => void
-  onLogout: () => void
-}) {
-  const [currentPw, setCurrentPw] = useState('')
-  const [newPw, setNewPw] = useState('')
-  const [confirmPw, setConfirmPw] = useState('')
-  const [showCurrentPw, setShowCurrentPw] = useState(false)
-  const [showNewPw, setShowNewPw] = useState(false)
-  const [showConfirmPw, setShowConfirmPw] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [sessions, setSessions] = useState<ActiveSession[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(true)
-  const [revokingJti, setRevokingJti] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    async function loadSessions() {
-      try {
-        const r = await fetch('/auth/sessions', { headers: { Authorization: `Bearer ${token}` } })
-        if (r.ok && !cancelled) {
-          const data = await r.json() as { sessions: ActiveSession[] }
-          setSessions(data.sessions)
-        }
-      } catch { /* non-critical */ } finally {
-        if (!cancelled) setSessionsLoading(false)
-      }
-    }
-    loadSessions()
-    return () => { cancelled = true }
-  }, [token])
-
-  const initials = firstName
-    ? firstName.charAt(0).toUpperCase() + (lastName ? lastName.charAt(0).toUpperCase() : '')
-    : email.charAt(0).toUpperCase()
-
-  const strength = getStrength(newPw)
-  const strengthMeta = [
-    { label: '',       bar: '',              text: '' },
-    { label: 'Weak',   bar: 'bg-red-400',    text: 'text-red-500' },
-    { label: 'Fair',   bar: 'bg-amber-400',  text: 'text-amber-500' },
-    { label: 'Good',   bar: 'bg-blue-400',   text: 'text-blue-500' },
-    { label: 'Strong', bar: 'bg-emerald-400', text: 'text-emerald-500' },
-  ][strength]
-
-  const newPwState: 'error' | 'success' | 'default' =
-    newPw.length === 0 ? 'default' : newPw.length < 8 ? 'error' : 'success'
-  const confirmPwState: 'error' | 'success' | 'default' =
-    confirmPw.length === 0 ? 'default' : confirmPw === newPw ? 'success' : 'error'
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    if (newPw.length < 8) { setError('New password must be at least 8 characters.'); return }
-    if (newPw !== confirmPw) { setError('Passwords do not match.'); return }
-    setSaving(true)
-    try {
-      const res = await fetch('/auth/change-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ current_password: currentPw, new_password: newPw }),
-      })
-      const data = await res.json() as { access_token?: string; detail?: { error?: string } | string }
-      if (!res.ok) {
-        const detail = data.detail
-        setError(typeof detail === 'string' ? detail : (detail?.error ?? 'Failed to change password'))
-        return
-      }
-      setCurrentPw(''); setNewPw(''); setConfirmPw('')
-      onToast('Password changed successfully', 'success')
-      if (data.access_token) onPasswordChanged(data.access_token)
-    } catch {
-      setError('Network error')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleRevoke(jti: string) {
-    setRevokingJti(jti)
-    try {
-      const r = await fetch(`/auth/sessions/${jti}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (r.ok || r.status === 204) {
-        setSessions(prev => prev.filter(s => s.jti !== jti))
-        onToast('Session revoked', 'success')
-      } else {
-        onToast('Failed to revoke session', 'error')
-      }
-    } catch {
-      onToast('Network error', 'error')
-    } finally {
-      setRevokingJti(null)
-    }
-  }
-
-  return (
-    <div className="fade-in space-y-5 max-w-lg">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900 tracking-tight font-display">Account settings</h2>
-        <p className="mt-1 text-sm text-slate-500">Manage your profile, security, and sessions.</p>
-      </div>
-
-      {/* Profile card — frosted glass */}
-      <div className="relative bg-white/70 backdrop-blur-xl rounded-2xl border border-slate-200/60 overflow-hidden shadow-sm">
-        <div className="h-20 bg-gradient-to-r from-indigo-500 via-indigo-600 to-violet-600 relative overflow-hidden">
-          <div
-            className="absolute inset-0 opacity-[0.15]"
-            style={{ backgroundImage: 'radial-gradient(circle, white 1px, transparent 1px)', backgroundSize: '20px 20px' }}
-            aria-hidden="true"
-          />
-        </div>
-        <div className="px-5 pb-5">
-          <div className="flex items-end justify-between -mt-8 mb-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-400 to-violet-600 flex items-center justify-center shadow-lg ring-4 ring-white flex-shrink-0">
-              <span className="text-xl font-extrabold text-white">{initials}</span>
-            </div>
-            <span className={`text-xs font-bold px-3 py-1 rounded-full mb-2 capitalize ${role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
-              {role}
-            </span>
-          </div>
-          {firstName ? (
-            <p className="text-lg font-bold text-slate-900 font-display">{firstName} {lastName}</p>
-          ) : null}
-          <p className={`text-sm truncate ${firstName ? 'text-slate-500' : 'text-lg font-bold text-slate-900'}`}>{email}</p>
-          {orgName && (
-            <p className="text-xs text-slate-400 mt-1.5 flex items-center gap-1.5">
-              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M4 16.5v-13h-.25a.75.75 0 010-1.5h12.5a.75.75 0 010 1.5H16v13h.25a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75v-2.5a.75.75 0 00-.75-.75h-2.5a.75.75 0 00-.75.75v2.5a.75.75 0 01-.75.75h-3.5a.75.75 0 010-1.5H4zm3-11a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5A.75.75 0 017 5.5zm.75 2.25a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-.75 4a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zm5.25-6a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-.75 4a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
-              </svg>
-              {orgName}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* Change password */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-        <div className="px-5 py-4 border-b border-slate-100">
-          <h3 className="text-sm font-bold text-slate-900 font-display">Change password</h3>
-          <p className="text-xs text-slate-400 mt-0.5">Choose a strong password of at least 8 characters.</p>
-        </div>
-        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
-          <PasswordField
-            id="cur-pw"
-            label="Current password"
-            value={currentPw}
-            onChange={setCurrentPw}
-            show={showCurrentPw}
-            onToggleShow={() => setShowCurrentPw(v => !v)}
-            autoComplete="current-password"
-            placeholder="••••••••"
-          />
-
-          <div className="space-y-1.5">
-            <PasswordField
-              id="new-pw"
-              label="New password"
-              value={newPw}
-              onChange={setNewPw}
-              show={showNewPw}
-              onToggleShow={() => setShowNewPw(v => !v)}
-              autoComplete="new-password"
-              placeholder="Min 8 characters"
-              minLength={8}
-              state={newPwState}
-            />
-            {newPw.length > 0 && (
-              <div>
-                <div className="flex gap-1 mt-2">
-                  {[1, 2, 3, 4].map((lvl) => (
-                    <div
-                      key={lvl}
-                      className={`h-1 flex-1 rounded-full transition-all duration-300 ${lvl <= strength ? strengthMeta.bar : 'bg-slate-100'}`}
-                    />
-                  ))}
-                </div>
-                <p className={`text-[11px] font-semibold mt-1 ${strengthMeta.text}`}>{strengthMeta.label}</p>
-              </div>
-            )}
-          </div>
-
-          <PasswordField
-            id="conf-pw"
-            label="Confirm new password"
-            value={confirmPw}
-            onChange={setConfirmPw}
-            show={showConfirmPw}
-            onToggleShow={() => setShowConfirmPw(v => !v)}
-            autoComplete="new-password"
-            placeholder="Repeat your new password"
-            state={confirmPwState}
-          />
-
-          {error && (
-            <div role="alert" className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-3.5 py-2.5">
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-              </svg>
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={saving || !currentPw || !newPw || !confirmPw}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-[.99] text-white rounded-xl py-2.5 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm"
-          >
-            {saving ? 'Saving…' : 'Update password'}
-          </button>
-        </form>
-      </div>
-
-      {/* Active sessions */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 font-display">Active sessions</h3>
-            <p className="text-xs text-slate-400 mt-0.5">All signed-in sessions for your account.</p>
-          </div>
-          <span className="text-xs font-semibold text-slate-400 bg-slate-100 rounded-full px-2.5 py-1">
-            {sessionsLoading ? '…' : sessions.length}
-          </span>
-        </div>
-        {sessionsLoading ? (
-          <p className="px-5 py-5 text-sm text-slate-400 text-center">Loading…</p>
-        ) : sessions.length === 0 ? (
-          <p className="px-5 py-5 text-sm text-slate-400 text-center">No active sessions</p>
-        ) : (
-          <ul className="divide-y divide-slate-100">
-            {sessions.map((session) => (
-              <li key={session.jti} className="px-5 py-3.5 flex items-start gap-3.5">
-                <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <svg className="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
-                  </svg>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-semibold text-slate-800 font-mono text-xs">{session.jti.slice(0, 8)}…</p>
-                    {session.is_current && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5">
-                        <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
-                        Current
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Created {new Date(session.created_at).toLocaleString()}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Expires {new Date(session.expires_at).toLocaleString()}
-                  </p>
-                </div>
-                {!session.is_current && (
-                  <button
-                    onClick={() => handleRevoke(session.jti)}
-                    disabled={revokingJti === session.jti}
-                    className="flex-shrink-0 text-xs font-semibold text-red-500 hover:text-red-700 border border-red-100 hover:border-red-200 hover:bg-red-50 rounded-lg px-2.5 py-1.5 transition-all mt-0.5 active:scale-95 disabled:opacity-40"
-                  >
-                    {revokingJti === session.jti ? '…' : 'Revoke'}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* Sign out */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-        <div className="px-5 py-4 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-700">Sign out of NeuraDesk</p>
-            <p className="text-xs text-slate-400 mt-0.5">You'll need to sign in again to access your account.</p>
-          </div>
-          <button
-            onClick={onLogout}
-            className="flex-shrink-0 text-sm font-semibold text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-xl px-4 py-2 hover:bg-red-50 active:scale-[.98] transition-all"
-          >
-            Sign out
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Main app ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -535,11 +148,56 @@ export default function App() {
   })
   const [submission, setSubmission] = useState<Submission | null>(null)
   const [appView, setAppView] = useState<AppView>('form')
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [prefillText, setPrefillText] = useState('')
   const [toasts, setToasts] = useState<Toast[]>([])
   const [agentsOnline, setAgentsOnline] = useState(true)
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null)
+
+  // The server is the source of truth for role and name — the token is a
+  // snapshot from sign-in. Re-sync on load, on tab focus and every 2 minutes so
+  // a promotion/demotion by an admin shows up without signing out and in.
+  useEffect(() => {
+    if (!auth?.token) return
+    const token = auth.token
+    let cancelled = false
+    async function sync() {
+      try {
+        const r = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+        if (!r.ok || cancelled) return
+        const p = await r.json() as { first_name: string; last_name: string; role: string; org_name: string }
+        setAuth((prev) => {
+          if (!prev || prev.token !== token) return prev
+          if (prev.role === p.role && prev.firstName === p.first_name && prev.lastName === p.last_name && prev.orgName === p.org_name) return prev
+          const next = { ...prev, role: p.role, firstName: p.first_name, lastName: p.last_name, orgName: p.org_name }
+          try { localStorage.setItem('nd_auth', JSON.stringify(next)) } catch { /* storage unavailable */ }
+          return next
+        })
+      } catch { /* offline — keep current */ }
+    }
+    sync()
+    const id = setInterval(sync, 120_000)
+    window.addEventListener('focus', sync)
+    return () => { cancelled = true; clearInterval(id); window.removeEventListener('focus', sync) }
+  }, [auth?.token])
+
+  // Any API call that finds the session dead signs the user out with a reason.
+  useEffect(() => {
+    function onEnded(e: Event) {
+      const reason = (e as CustomEvent<SessionEndReason>).detail
+      setSessionNotice(reason === 'deactivated'
+        ? 'Your account has been deactivated. Contact your administrator.'
+        : 'Your session has ended. Please sign in again.')
+      try { localStorage.removeItem('nd_auth') } catch { /* storage unavailable */ }
+      setAuth(null)
+      setSubmission(null)
+      setAppView('form')
+    }
+    window.addEventListener(SESSION_ENDED_EVENT, onEnded)
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -582,7 +240,7 @@ export default function App() {
       const res = await fetch('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) {
         const profile = await res.json() as { first_name: string; last_name: string; email: string; role: string; org_name: string }
-        const updated: Auth = { ...state, firstName: profile.first_name, lastName: profile.last_name, orgName: profile.org_name }
+        const updated: Auth = { ...state, firstName: profile.first_name, lastName: profile.last_name, orgName: profile.org_name, role: profile.role }
         localStorage.setItem('nd_auth', JSON.stringify(updated))
         setAuth(updated)
       }
@@ -607,6 +265,11 @@ export default function App() {
   }, [auth?.token])
 
   function handleLogout() {
+    // Revoke the token on the server too — clearing the browser alone would leave
+    // it valid (and listed as an active session) until it expires.
+    if (auth?.token) {
+      fetch('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${auth.token}` } }).catch(() => {})
+    }
     localStorage.removeItem('nd_auth')
     setAuth(null)
     setSubmission(null)
@@ -638,9 +301,9 @@ export default function App() {
     }
   }
 
-  if (!auth) return <LoginForm onLogin={handleLogin} />
+  if (!auth) return <LoginForm key={sessionNotice ?? 'login'} onLogin={(t) => { setSessionNotice(null); handleLogin(t) }} notice={sessionNotice} />
 
-  const initials = auth.email.charAt(0).toUpperCase()
+  const initials = (auth.firstName || auth.email).charAt(0).toUpperCase()
   const isProcessing = submission !== null
 
   const greeting = (() => {
@@ -652,7 +315,15 @@ export default function App() {
   function navTo(view: AppView) {
     setSubmission(null)
     setSubmitError(null)
+    setHistoryFilter('all')
     setAppView(view)
+  }
+
+  function openHistory(filter: HistoryFilter) {
+    setSubmission(null)
+    setSubmitError(null)
+    setHistoryFilter(filter)
+    setAppView('history')
   }
 
   function handleRetry(text: string) {
@@ -792,7 +463,7 @@ export default function App() {
 
         {/* Scrollable main content */}
         <main className="flex-1 overflow-y-auto">
-          <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-7 lg:py-8 pb-28 lg:pb-10">
+          <div className={`${isProcessing ? 'max-w-2xl' : appView === 'form' ? 'max-w-6xl' : appView === 'history' ? 'max-w-4xl' : appView === 'admin' ? 'max-w-5xl' : appView === 'account' ? 'max-w-4xl' : 'max-w-2xl'} mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-7 lg:py-8 pb-28 lg:pb-10`}>
             {isProcessing ? (
               <AgentTimeline
                 ticketId={submission.ticketId}
@@ -801,12 +472,19 @@ export default function App() {
                 token={auth.token}
                 onReset={() => setSubmission(null)}
               />
-            ) : appView === 'admin' ? (
-              <AdminDashboard token={auth.token} onNewTicket={() => navTo('form')} onToast={addToast} />
+            ) : appView === 'admin' && auth.role === 'admin' ? (
+              <AdminDashboard token={auth.token} currentUserId={auth.userId} onNewTicket={() => navTo('form')} onToast={addToast} />
             ) : appView === 'history' ? (
-              <TicketHistory token={auth.token} onNewTicket={() => navTo('form')} onRetry={handleRetry} />
+              <TicketHistory
+                key={historyFilter}
+                token={auth.token}
+                onNewTicket={() => navTo('form')}
+                onRetry={handleRetry}
+                onToast={addToast}
+                initialFilter={historyFilter}
+              />
             ) : appView === 'account' ? (
-              <AccountPanel
+              <AccountSettings
                 token={auth.token}
                 email={auth.email}
                 firstName={auth.firstName}
@@ -815,21 +493,33 @@ export default function App() {
                 role={auth.role}
                 onToast={addToast}
                 onPasswordChanged={(newToken) => handleLogin(newToken)}
+                onProfileUpdated={(firstName, lastName) => {
+                  const updated = { ...auth, firstName, lastName }
+                  try { localStorage.setItem('nd_auth', JSON.stringify(updated)) } catch { /* storage unavailable */ }
+                  setAuth(updated)
+                }}
                 onLogout={handleLogout}
               />
             ) : (
-              <>
-                <TicketForm
-                  onSubmit={(text, img) => { setPrefillText(''); handleSubmit(text, img) }}
-                  isSubmitting={isCreating}
-                  initialText={prefillText}
-                  greeting={greeting}
-                  agentsOnline={agentsOnline}
-                />
-                {submitError && (
-                  <p className="mt-3 text-sm text-red-600 text-center">{submitError}</p>
-                )}
-              </>
+              <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_340px]">
+                <div className="min-w-0">
+                  <NeedsActionBanner token={auth.token} onReview={() => openHistory('action')} />
+                  <TicketForm
+                    onSubmit={(text, img) => { setPrefillText(''); handleSubmit(text, img) }}
+                    isSubmitting={isCreating}
+                    initialText={prefillText}
+                    greeting={greeting}
+                    agentsOnline={agentsOnline}
+                  />
+                  {submitError && (
+                    <p role="alert" className="mt-3 text-sm text-red-600">{submitError}</p>
+                  )}
+                </div>
+                <aside className="space-y-5 lg:pt-1" aria-label="Your tickets and how requests are handled">
+                  <RecentTickets token={auth.token} onViewAll={() => openHistory('all')} />
+                  <HowItWorks />
+                </aside>
+              </div>
             )}
           </div>
         </main>

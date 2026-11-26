@@ -114,6 +114,7 @@ class TestActionNode:
         state = _base_state(
             user_id="jdoe@corp.com",
             entities={"username": "unknown"},
+            kb_grounded=True,
         )
         result = await action_node(state)
         assert "jdoe@corp.com" in result["resolution"]

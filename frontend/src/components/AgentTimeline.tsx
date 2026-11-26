@@ -32,6 +32,13 @@ type WsMessage = {
   trace_url?: string
 }
 
+/** Describe what the action step really did, so a policy answer isn't shown as an API call. */
+function actionOutcome(actionTaken: string | undefined): Pick<Step, 'label' | 'sublabel'> | null {
+  if (actionTaken === 'knowledge_answer') return { label: 'Answer prepared', sublabel: 'No system changes needed' }
+  if (actionTaken?.endsWith('_executed')) return { label: 'Action completed', sublabel: 'Enterprise system updated' }
+  return null
+}
+
 const NODE_META: Record<string, { label: string; sublabel: string; iconPath: string }> = {
   intake_node: {
     label: 'Triaging ticket',
@@ -44,8 +51,8 @@ const NODE_META: Record<string, { label: string; sublabel: string; iconPath: str
     iconPath: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
   },
   action_node: {
-    label: 'Executing action',
-    sublabel: 'Calling enterprise APIs',
+    label: 'Taking action',
+    sublabel: 'Answering or calling enterprise APIs',
     iconPath: 'M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z',
   },
   escalation_node: {
@@ -71,8 +78,17 @@ function CheckIcon() {
   )
 }
 
-function StepIcon({ isDone, isActive, nodeKey }: { isDone: boolean; isActive: boolean; nodeKey: string }) {
+function StepIcon({ isDone, isActive, nodeKey, paused = false }: { isDone: boolean; isActive: boolean; nodeKey: string; paused?: boolean }) {
   const meta = NODE_META[nodeKey]
+  if (paused) {
+    return (
+      <div className="w-9 h-9 rounded-full bg-amber-400 flex items-center justify-center shadow-sm ring-4 ring-amber-100 flex-shrink-0" aria-label="Waiting for your confirmation">
+        <svg className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
+        </svg>
+      </div>
+    )
+  }
   if (isDone) {
     return (
       <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center shadow-sm ring-4 ring-white flex-shrink-0">
@@ -173,7 +189,8 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
       if (msg.node === 'escalation_node') {
         setEscalationStep({ node: 'escalation_node', ...NODE_META.escalation_node, isDone: true })
       } else {
-        setSteps((prev) => prev.map((s) => s.node === msg.node ? { ...s, isDone: true } : s))
+        const outcome = msg.node === 'action_node' ? actionOutcome(out.action_taken) : null
+        setSteps((prev) => prev.map((s) => s.node === msg.node ? { ...s, ...outcome, isDone: true } : s))
       }
     }
 
@@ -337,7 +354,7 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
                         </svg>
                       </div>
                     ) : (
-                      <StepIcon isDone={step.isDone} isActive={isActive} nodeKey={step.node} />
+                      <StepIcon isDone={step.isDone} isActive={isActive} nodeKey={step.node} paused={isAwaiting && step.node === 'action_node'} />
                     )}
                     {!isLast && (
                       <div
@@ -352,13 +369,15 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
                     <p className={`text-sm font-semibold transition-colors duration-300 ${
                       step.isHint ? 'text-slate-300' : step.isDone ? 'text-slate-900' : isActive ? 'text-indigo-700' : 'text-slate-400'
                     }`}>
-                      {step.label}
+                      {isAwaiting && step.node === 'action_node' ? 'Waiting for your confirmation' : step.label}
                       {isActive && <span className="ml-1 text-indigo-400 animate-pulse" aria-hidden="true">…</span>}
                     </p>
                     <p className={`text-xs mt-0.5 transition-colors duration-300 ${
                       step.isHint ? 'text-slate-200 italic' : step.isDone ? 'text-slate-400' : isActive ? 'text-indigo-400' : 'text-slate-300'
                     }`}>
-                      {step.isHint ? 'Automatic fallback if needed' : (NODE_META[step.node]?.sublabel ?? step.sublabel)}
+                      {step.isHint ? 'Automatic fallback if needed'
+                        : isAwaiting && step.node === 'action_node' ? 'Nothing has been changed yet'
+                        : step.sublabel}
                     </p>
                     {!isLast && <div className="mt-3" />}
                   </div>
@@ -423,9 +442,9 @@ export default function AgentTimeline({ ticketId, text, token, imageB64, onReset
                   <button
                     onClick={handleConfirm}
                     disabled={confirmStatus === 'pending'}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors"
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
-                    {confirmStatus === 'pending' ? 'Processing…' : 'Confirm action'}
+                    {confirmStatus === 'pending' ? 'Processing…' : 'Confirm and proceed'}
                   </button>
                   <button
                     onClick={handleCancel}

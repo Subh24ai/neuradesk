@@ -145,10 +145,9 @@ class TestKnowledgeNode:
         assert query_used.startswith("password_reset")
         assert "forgot my password" in query_used
 
-    def test_resolution_template_contains_username_placeholder(self) -> None:
-        """resolution_template always contains {username} even if LLM omits it."""
+    def test_resolution_is_used_verbatim_without_identity_suffix(self) -> None:
+        """The reply is shown as written — no "Ticket raised by <email>" suffix appended."""
         chunks = _make_chunks(1)
-        # LLM deliberately omits {username}
         llm_text = "Reset your password via the IT Self-Service Portal."
         state = _base_state()
 
@@ -158,7 +157,9 @@ class TestKnowledgeNode:
         ):
             result = knowledge_node(state)
 
-        assert "{username}" in result["resolution_template"]
+        assert result["resolution_template"] == llm_text
+        assert "{username}" not in result["resolution_template"]
+        assert "Ticket raised by" not in result["resolution_template"]
 
     def test_llm_error_falls_back_to_chunk_content(self) -> None:
         """LLM exception causes graceful fallback to the raw top-chunk content."""
@@ -221,3 +222,57 @@ class TestKnowledgeNode:
         query_used: str = mock_ret.search.call_args[0][0]
         assert "Invalid credentials" in query_used
         assert "Screenshot" not in query_used
+
+
+def test_llm_receives_the_employee_question() -> None:
+    """Regression: the LLM used to get only the KB excerpts, never the question it must answer."""
+    chunks = _make_chunks(2)
+    llm = _mock_llm("You get 28 days; request it in Workday.")
+    state = _base_state(raw_text="How many leave days do I get and how do I request them?")
+
+    with (
+        patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(chunks)),
+        patch("agents.knowledge_node.get_llm", return_value=llm),
+    ):
+        knowledge_node(state)
+
+    sent = llm.invoke.call_args[0][0][1].content
+    assert "How many leave days do I get and how do I request them?" in sent
+    assert chunks[0]["content"] in sent
+
+
+def test_actionable_request_prompt_forbids_telling_user_to_file_a_ticket() -> None:
+    """For actions NeuraDesk performs itself, the reply must not say 'submit a ticket'."""
+    llm = _mock_llm("Change the temporary password at next sign-in.")
+    state = _base_state(raw_text="I forgot my password", category="password_reset")
+    with (
+        patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(_make_chunks(2))),
+        patch("agents.knowledge_node.get_llm", return_value=llm),
+    ):
+        knowledge_node(state)
+    sent = llm.invoke.call_args[0][0][1].content
+    assert "already carrying out this request" in sent and "Do not tell them to submit" in sent
+
+
+def test_policy_question_prompt_has_no_action_framing() -> None:
+    """A plain policy question (category unknown) is answered normally."""
+    llm = _mock_llm("You get 26 days.")
+    state = _base_state(raw_text="How many leave days do I get?", category="unknown")
+    with (
+        patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(_make_chunks(2))),
+        patch("agents.knowledge_node.get_llm", return_value=llm),
+    ):
+        knowledge_node(state)
+    assert "already carrying out" not in llm.invoke.call_args[0][0][1].content
+
+
+def test_no_followup_guidance_falls_back_to_standard_reply() -> None:
+    """If the model says the KB adds nothing (NONE), the action's own message is used, not 'NONE'."""
+    state = _base_state(raw_text="Please install Figma", category="software_install")
+    with (
+        patch("agents.knowledge_node.get_retriever", return_value=_mock_retriever(_make_chunks(2))),
+        patch("agents.knowledge_node.get_llm", return_value=_mock_llm("NONE")),
+    ):
+        result = knowledge_node(state)
+    assert result["kb_grounded"] is False
+    assert result.get("resolution") != "NONE"

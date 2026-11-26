@@ -33,19 +33,22 @@ def escalation_node(state: TicketState) -> TicketState:
     log.info("escalation_node.start", ticket_id=state.get("ticket_id"), error=error)
 
     # Determine the most specific reason for escalation.
+    # Reasons are shown to the employee and the admin, so they are plain
+    # language; numbers and raw errors go to the logs/trace, not the ticket.
     if category == "unknown":
-        reason = "Category could not be determined."
+        reason = "This isn't something NeuraDesk can handle automatically, so a support agent will pick it up."
     elif confidence < 0.6:
-        reason = f"Triage confidence too low ({confidence:.2f} < 0.60)."
+        reason = "We weren't confident enough to act on this automatically, so a support agent will review it."
     elif error and "confirm" in error.lower():
-        reason = "Destructive action awaiting human confirmation."
+        reason = "This change needs confirmation before anything happens."
     elif error:
-        reason = f"Action node error: {error}"
+        log.warning("escalation_node.action_failed", ticket_id=state.get("ticket_id"), error=error)
+        reason = "We couldn't complete this automatically because a system didn't respond, so a support agent will finish it."
     else:
         # Keep the specific reason an upstream gate recorded (e.g. the
         # authorization gate's "request names another user's account") rather
         # than replacing it with a generic one.
-        reason = state.get("escalation_reason") or "Escalated by policy."
+        reason = state.get("escalation_reason") or "Routed to a support agent for review."
 
     assignee = _PRIORITY_GROUP.get(priority, "tier-1-support")
 

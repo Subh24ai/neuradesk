@@ -16,10 +16,11 @@ log = structlog.get_logger(__name__)
 # Checked case-insensitively; each tuple is (label, compiled_pattern).
 _INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("system_role_prefix",      re.compile(r"\bsystem\s*:", re.IGNORECASE)),
-    ("ignore_previous",         re.compile(r"ignore\s+(previous|prior|all)\s+(instructions?|prompts?|rules?)", re.IGNORECASE)),
+    # Allows filler words: "ignore all previous instructions", "ignore the above rules".
+    ("ignore_previous",         re.compile(r"\bignore\s+(?:(?:all|any|the|your|my|of|these|those|previous|prior|above|earlier|preceding|system)\s+){1,4}(instructions?|prompts?|rules?|guidelines?|directions?)", re.IGNORECASE)),
     ("forget_instructions",     re.compile(r"forget\s+(your\s+)?(instructions?|rules?|training)", re.IGNORECASE)),
     ("you_are_now",             re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE)),
-    ("disregard_instructions",  re.compile(r"\bdisregard\s+(all\s+)?(previous\s+)?(instructions?|rules?)", re.IGNORECASE)),
+    ("disregard_instructions",  re.compile(r"\b(?:disregard|override|bypass)\s+(?:(?:all|any|the|your|previous|prior|above|earlier|system|safety|security)\s+){0,4}(instructions?|rules?|guidelines?|policies|checks?)", re.IGNORECASE)),
     ("prompt_delimiter",        re.compile(r"\n\s*---+\s*\n", re.IGNORECASE)),
     ("jailbreak_marker",        re.compile(r"\[\s*(?:INST|SYS|SYSTEM|PROMPT)\s*\]", re.IGNORECASE)),
 ]

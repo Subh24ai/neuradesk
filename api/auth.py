@@ -5,6 +5,7 @@ import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import bcrypt
 import jwt
@@ -16,6 +17,7 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from api.email import send_otp_email  # noqa: F401 — re-exported for callers that mock it
@@ -27,6 +29,8 @@ from api.models import (
     OtpResendRequest,
     OtpSentResponse,
     OtpVerifyRequest,
+    PasswordChangedResponse,
+    ProfileUpdateRequest,
     RegisterRequest,
     ResetPasswordRequest,
     SessionListResponse,
@@ -114,7 +118,7 @@ def create_access_token(
     return jwt.encode(payload, _SECRET_KEY, algorithm=_ALGORITHM)
 
 
-def _decode_token(token: str) -> dict:
+def _decode_token(token: str) -> dict[str, Any]:
     """Decode and validate a JWT; raise 401 HTTPException on any failure."""
     try:
         return jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
@@ -133,10 +137,21 @@ def _decode_token(token: str) -> dict:
 # ── Session tracking ─────────────────────────────────────────────────────────
 
 
-def _record_session(token_str: str, db: Session) -> None:
+def _client_ip(request: Request | None) -> str | None:
+    """Best-effort client IP for display (first X-Forwarded-For hop behind a proxy)."""
+    if request is None:
+        return None
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()[:64] or None
+    return request.client.host[:64] if request.client else None
+
+
+def _record_session(token_str: str, db: Session, request: Request | None = None) -> None:
     """Decode a freshly issued token and insert a UserSessionModel row.
 
-    Silently skips on any error so a DB hiccup never blocks login.
+    Stores the browser's User-Agent and client IP so users can recognise their
+    devices. Silently skips on any error so a DB hiccup never blocks login.
     """
     try:
         payload = jwt.decode(token_str, _SECRET_KEY, algorithms=[_ALGORITHM])
@@ -146,11 +161,75 @@ def _record_session(token_str: str, db: Session) -> None:
         if not (jti and user_id and exp):
             return
         expires_at = datetime.fromtimestamp(exp, tz=UTC)
-        db.add(UserSessionModel(jti=jti, user_id=user_id, expires_at=expires_at))
+        ua = (request.headers.get("user-agent") or "")[:300] if request is not None else ""
+        db.add(UserSessionModel(
+            jti=jti, user_id=user_id, expires_at=expires_at,
+            user_agent=ua or None, ip_address=_client_ip(request),
+        ))
         # flush so errors surface before the outer commit
         db.flush()
     except Exception:
         log.warning("auth.record_session.failed")
+
+
+def _deactivated() -> HTTPException:
+    """Error for accounts an admin has deactivated."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"error": "Your account has been deactivated. Contact your administrator.",
+                "code": "ACCOUNT_DEACTIVATED"},
+    )
+
+
+# Shown when sign-in fails on our side (e.g. database down), so people don't
+# assume their password is wrong and start resetting it.
+_SERVER_FAULT_MSG: str = (
+    "Sign-in is temporarily unavailable — a problem on our side, not your password. "
+    "Please try again in a minute."
+)
+
+
+def _active_payload(credentials: HTTPAuthorizationCredentials, db: Session) -> dict[str, Any]:
+    """Decode a bearer token and reject it if it has been revoked.
+
+    Every endpoint that acts on a raw token must use this — decoding alone lets a
+    signed-out (blocklisted) token keep working until it expires.
+    """
+    payload = _decode_token(credentials.credentials)
+    # Account status first: deactivation also revokes sessions, and the employee
+    # should be told *why* they lost access, not just that their session ended.
+    user = db.get(UserModel, payload.get("sub")) if payload.get("sub") else None
+    if user is not None and not user.is_active:
+        raise _deactivated()
+    jti = payload.get("jti")
+    if jti and db.get(TokenBlocklistModel, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
+        )
+    return payload
+
+
+def _revoke_jti(db: Session, jti: str, expires_at: datetime) -> None:
+    """Blocklist one token id (idempotent)."""
+    if not db.get(TokenBlocklistModel, jti):
+        db.add(TokenBlocklistModel(jti=jti, expires_at=expires_at))
+
+
+def _revoke_other_sessions(db: Session, user_id: str, keep_jti: str | None) -> int:
+    """Revoke every active session of ``user_id`` except ``keep_jti``. Returns how many."""
+    now = datetime.now(UTC)
+    rows = (
+        db.query(UserSessionModel)
+        .filter(UserSessionModel.user_id == user_id, UserSessionModel.expires_at > now)
+        .all()
+    )
+    revoked = 0
+    for r in rows:
+        if r.jti != keep_jti and not db.get(TokenBlocklistModel, r.jti):
+            db.add(TokenBlocklistModel(jti=r.jti, expires_at=r.expires_at))
+            revoked += 1
+    return revoked
 
 
 # ── Org utilities ─────────────────────────────────────────────────────────────
@@ -189,14 +268,7 @@ def get_current_user(
 ) -> UserModel:
     """Resolve Bearer JWT to a UserModel; raise 401 if missing, invalid, expired, or revoked."""
     payload = _decode_token(credentials.credentials)
-
     jti: str | None = payload.get("jti")
-    if jti and db.get(TokenBlocklistModel, jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
-        )
-
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -208,6 +280,13 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "User not found", "code": "USER_NOT_FOUND"},
+        )
+    if not user.is_active:
+        raise _deactivated()  # before the blocklist: deactivation revokes sessions too
+    if jti and db.get(TokenBlocklistModel, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Token has been revoked", "code": "TOKEN_REVOKED"},
         )
     return user
 
@@ -227,7 +306,7 @@ _ORG_CREATION_SECRET: str = os.environ.get("ORG_CREATION_SECRET", "")
     "/config",
     summary="Return public auth configuration flags (no auth required)",
 )
-def auth_config() -> dict:
+def auth_config() -> dict[str, Any]:
     """Expose whether org creation is restricted so the frontend can show/hide the token field."""
     return {
         "org_creation_restricted": bool(_ORG_CREATION_SECRET),
@@ -236,7 +315,7 @@ def auth_config() -> dict:
 
 
 @auth_router.get("/me", summary="Return the current user's profile")
-def me(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def me(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     """Return first_name, last_name, email, role, and org_name for the authenticated user."""
     org = db.get(OrganizationModel, user.org_id)
     return {
@@ -292,7 +371,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 
     try:
         # Check email uniqueness first — before any org creation work.
-        if db.query(UserModel).filter(UserModel.email == req.email).first():
+        if db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"error": "Email already registered", "code": "EMAIL_TAKEN"},
@@ -401,7 +480,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 @_limiter.limit("10/minute")
 def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """Validate the 6-digit OTP, mark the account verified, and return an access token."""
-    user = db.query(UserModel).filter(UserModel.email == req.email).first()
+    user = db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first()
     # Return generic error — do not reveal whether the email exists.
     _invalid = HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -460,7 +539,7 @@ def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(ge
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
     )
-    _record_session(token_str, db)
+    _record_session(token_str, db, request)
     db.commit()
     return TokenResponse(access_token=token_str)
 
@@ -472,18 +551,15 @@ def verify_otp(request: Request, req: OtpVerifyRequest, db: Session = Depends(ge
 )
 @_limiter.limit("3/minute")
 def resend_otp(request: Request, req: OtpResendRequest, db: Session = Depends(get_db)) -> OtpSentResponse:
-    """Generate a new OTP (invalidating the previous one) and send it by email."""
-    user = db.query(UserModel).filter(UserModel.email == req.email).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "User not found", "code": "USER_NOT_FOUND"},
-        )
-    if user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "Account already verified", "code": "ALREADY_VERIFIED"},
-        )
+    """Generate a new OTP (invalidating the previous one) and send it by email.
+
+    Always answers the same way for unknown, already-verified and pending accounts
+    so the endpoint can't be used to discover which emails are registered.
+    """
+    user = db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first()
+    if not user or user.is_verified:
+        log.info("auth.resend_otp.noop", reason="unknown" if not user else "already_verified")
+        return OtpSentResponse(message="OTP sent", email=req.email, dev_otp=None)
 
     otp = generate_otp()
     user.otp = otp
@@ -516,7 +592,7 @@ def resend_otp(request: Request, req: OtpResendRequest, db: Session = Depends(ge
 def forgot_password(request: Request, req: ForgotPasswordRequest, db: Session = Depends(get_db)) -> OtpSentResponse:
     """Generate a password-reset OTP and email it. Always returns 200 to avoid user enumeration."""
     dev_otp_hint: str | None = None
-    user = db.query(UserModel).filter(UserModel.email == req.email).first()
+    user = db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first()
     if user:
         otp = generate_otp()
         user.otp = otp
@@ -539,9 +615,9 @@ def forgot_password(request: Request, req: ForgotPasswordRequest, db: Session = 
     response_model=TokenResponse,
     summary="Verify the reset OTP and set a new password",
 )
-def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def reset_password(request: Request, req: ResetPasswordRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """Validate the reset OTP, update the password, mark account verified, and return a token."""
-    user = db.query(UserModel).filter(UserModel.email == req.email).first()
+    user = db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first()
     invalid = HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={"error": "Invalid or expired reset code", "code": "INVALID_RESET"},
@@ -569,11 +645,15 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
         db.commit()
         raise invalid
 
+    if not user.is_active:
+        raise _deactivated()
     user.hashed_password = hash_password(req.new_password)
     user.is_verified = True
     user.otp = None
     user.otp_expires_at = None
     user.otp_attempts = 0
+    # Account recovery: whoever else was signed in (e.g. with a stolen session) loses access.
+    _revoke_other_sessions(db, user.id, keep_jti=None)
     db.commit()
 
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
@@ -582,7 +662,7 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
     )
-    _record_session(token_str, db)
+    _record_session(token_str, db, request)
     db.commit()
     return TokenResponse(access_token=token_str)
 
@@ -593,11 +673,16 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
     summary="Exchange a valid token for a fresh one (extends session by 8 hours)",
 )
 def refresh_token(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
-    """Validate the current Bearer token and issue a new 8-hour token. Use this before expiry."""
-    payload = _decode_token(credentials.credentials)
+    """Exchange a valid, non-revoked token for a fresh 8-hour one.
+
+    The old token is retired, so a background refresh *replaces* the device's
+    session instead of piling up parallel valid tokens.
+    """
+    payload = _active_payload(credentials, db)
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -616,7 +701,10 @@ def refresh_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
     )
-    _record_session(token_str, db)
+    old_jti, old_exp = payload.get("jti"), payload.get("exp")
+    if old_jti and old_exp:
+        _revoke_jti(db, old_jti, datetime.fromtimestamp(old_exp, tz=UTC))
+    _record_session(token_str, db, request)
     db.commit()
     return TokenResponse(access_token=token_str)
 
@@ -630,16 +718,21 @@ class ChangePasswordRequest(BaseModel):
 
 @auth_router.post(
     "/change-password",
-    response_model=TokenResponse,
-    summary="Change password for the currently authenticated user",
+    response_model=PasswordChangedResponse,
+    summary="Change password and sign out every other session",
 )
 def change_password(
+    request: Request,
     req: ChangePasswordRequest,
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
     db: Session = Depends(get_db),
-) -> TokenResponse:
-    """Verify the current password, set the new one, and return a fresh token."""
-    payload = _decode_token(credentials.credentials)
+) -> PasswordChangedResponse:
+    """Verify the current password, set the new one, and sign out all sessions.
+
+    Standard practice: if the old password was compromised, any device signed in
+    with it must lose access. The caller gets a fresh token for this device.
+    """
+    payload = _active_payload(credentials, db)
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -657,33 +750,35 @@ def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "Current password is incorrect", "code": "WRONG_PASSWORD"},
         )
+    if req.new_password == req.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "New password must be different from the current one", "code": "PASSWORD_UNCHANGED"},
+        )
     user.hashed_password = hash_password(req.new_password)
     old_jti: str | None = payload.get("jti")
+    others = _revoke_other_sessions(db, user.id, keep_jti=old_jti)
     if old_jti:
         exp = payload.get("exp")
-        expires_at = (
-            datetime.fromtimestamp(exp, tz=UTC)
-            if exp
-            else datetime.now(UTC) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES)
-        )
-        db.add(TokenBlocklistModel(jti=old_jti, expires_at=expires_at))
+        _revoke_jti(db, old_jti, datetime.fromtimestamp(exp, tz=UTC) if exp
+                    else datetime.now(UTC) + timedelta(minutes=_TOKEN_EXPIRE_MINUTES))
     db.commit()
     org = db.get(OrganizationModel, user.org_id) if user.org_id else None
-    log.info("auth.change_password", user_id=user.id)
+    log.info("auth.change_password", user_id=user.id, other_sessions_signed_out=others)
     token_str = create_access_token(
         user.id, user.email, user.org_id or "", org.name if org else "", user.role,
         user.first_name or "", user.last_name or "",
     )
-    _record_session(token_str, db)
+    _record_session(token_str, db, request)
     db.commit()
-    return TokenResponse(access_token=token_str)
+    return PasswordChangedResponse(access_token=token_str, other_sessions_signed_out=others)
 
 
 @auth_router.post("/logout", summary="Invalidate the current Bearer token")
 def logout(
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Add the token's jti to the blocklist. Idempotent — safe to call multiple times."""
     payload = _decode_token(credentials.credentials)
     jti: str | None = payload.get("jti")
@@ -713,7 +808,7 @@ def list_sessions(
 
     The is_current flag is True for the session matching the caller's own JTI.
     """
-    payload = _decode_token(credentials.credentials)
+    payload = _active_payload(credentials, db)
     caller_jti: str | None = payload.get("jti")
     user_id: str | None = payload.get("sub")
     if not user_id:
@@ -746,6 +841,8 @@ def list_sessions(
             created_at=r.created_at,
             expires_at=r.expires_at,
             is_current=(r.jti == caller_jti),
+            user_agent=r.user_agent,
+            ip_address=r.ip_address,
         )
         for r in rows
         if r.jti not in revoked_jtis
@@ -769,7 +866,7 @@ def revoke_session(
     Returns 404 if the session does not belong to the authenticated user.
     Returns 409 if the caller tries to revoke their own current session (use /auth/logout instead).
     """
-    payload = _decode_token(credentials.credentials)
+    payload = _active_payload(credentials, db)
     caller_jti: str | None = payload.get("jti")
     user_id: str | None = payload.get("sub")
     if not user_id:
@@ -797,12 +894,52 @@ def revoke_session(
     log.info("auth.revoke_session", jti=jti, user_id=user_id)
 
 
+@auth_router.delete("/sessions", summary="Sign out every other session (keep this one)")
+def revoke_other_sessions(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Revoke all of the caller's sessions except the one making this request."""
+    payload = _active_payload(credentials, db)
+    user_id: str | None = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid token", "code": "TOKEN_INVALID"},
+        )
+    count = _revoke_other_sessions(db, user_id, keep_jti=payload.get("jti"))
+    db.commit()
+    log.info("auth.revoke_other_sessions", user_id=user_id, count=count)
+    return {"signed_out": count}
+
+
+@auth_router.patch("/me", summary="Update the current user's name")
+def update_me(
+    req: ProfileUpdateRequest,
+    user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Update first and last name; returns the same shape as GET /auth/me."""
+    first, last = req.first_name.strip(), req.last_name.strip()
+    if not first or not last:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "First and last name are required", "code": "NAME_REQUIRED"},
+        )
+    user.first_name, user.last_name = first, last
+    db.commit()
+    org = db.get(OrganizationModel, user.org_id) if user.org_id else None
+    log.info("auth.update_me", user_id=user.id)
+    return {"first_name": first, "last_name": last, "email": user.email, "role": user.role,
+            "org_name": org.name if org else ""}
+
+
 @auth_router.post("/login", response_model=TokenResponse, summary="Login with email + password")
 @_limiter.limit("20/minute")
 def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """Verify credentials and return an 8-hour access token. Rejects unverified accounts."""
     try:
-        user = db.query(UserModel).filter(UserModel.email == req.email).first()
+        user = db.query(UserModel).filter(func.lower(UserModel.email) == req.email).first()
         if not user or not verify_password(req.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -813,12 +950,14 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) ->
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error": "Email not verified — check your inbox", "code": "EMAIL_NOT_VERIFIED"},
             )
+        if not user.is_active:
+            raise _deactivated()
         org = db.get(OrganizationModel, user.org_id) if user.org_id else None
         log.info("auth.login", user_id=user.id, org_id=user.org_id)
         token_str = create_access_token(
             user.id, user.email, user.org_id or "", org.name if org else "", user.role
         )
-        _record_session(token_str, db)
+        _record_session(token_str, db, request)
         db.commit()
         return TokenResponse(access_token=token_str)
     except HTTPException:
@@ -827,5 +966,5 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)) ->
         log.exception("auth.login.error", email=req.email)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "Authentication failed. Please try again.", "code": "LOGIN_FAILED"},
+            detail={"error": _SERVER_FAULT_MSG, "code": "LOGIN_FAILED"},
         ) from exc

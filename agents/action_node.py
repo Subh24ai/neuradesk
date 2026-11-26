@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 import httpx
@@ -37,14 +38,22 @@ _ENDPOINT_MAP: dict[str, str] = {
 # Reply used when the action ran but the org's knowledge base had no article
 # for it. Accurate to what the enterprise call actually did — no invented policy.
 _STANDARD_REPLY: dict[str, str] = {
-    "password_reset": "Your password reset has been started, {username}. Check your email for a temporary password and change it at your next sign-in.",
-    "access_request": "Your access request has been processed, {username}. Sign out and back in if the new access doesn't appear.",
-    "software_install": "Your software request has been sent to your manager for approval, {username}.",
-    "leave_approval": "Your leave request has been recorded, {username}.",
-    "incident_report": "An incident has been opened and routed to the support team, {username}.",
-    "access_revoke": "The requested access removal has been completed, {username}.",
-    "account_lock": "The requested account lock has been applied, {username}.",
-    "account_delete": "The requested account deletion has been completed, {username}.",
+    "password_reset": "Your password reset has been started. Check your email for a temporary password and change it at your next sign-in.",
+    "access_request": "Your access request has been processed. Sign out and back in if the new access doesn't appear.",
+    "software_install": "Your software request has been sent to your manager for approval.",
+    "leave_approval": "Your leave request has been recorded.",
+    "incident_report": "An incident has been opened and routed to the support team.",
+    "access_revoke": "The requested access removal has been completed.",
+    "account_lock": "The requested account lock has been applied.",
+    "account_delete": "The requested account deletion has been completed.",
+}
+
+
+# Plain-language confirmation prompts shown to the user (never raw intent names).
+_CONFIRM_PROMPT: dict[str, str] = {
+    "access_revoke": "This will remove access from your account. Please confirm before we proceed.",
+    "account_lock": "This will lock your account — you won't be able to sign in until it's unlocked. Please confirm before we proceed.",
+    "account_delete": "This will permanently delete your account. It can't be undone. Please confirm before we proceed.",
 }
 
 
@@ -109,6 +118,25 @@ async def _post_enterprise(
             last_exc = exc
             log.warning("action_node.retry", attempt=attempt, error=str(exc), endpoint=endpoint)
     raise last_exc  # type: ignore[misc]
+
+
+# Access requests for elevated or sweeping privileges are never auto-provisioned:
+# they need a named owner's approval, so a human handles them.
+_PRIVILEGED_ACCESS = re.compile(
+    r"\b(admin(?:istrator)?s?|root|super\s*-?user|sudo|privileged|domain\s+admin|"
+    r"production|prod\s+(?:db|database|server)s?|payroll|"
+    r"(?:all|every|any)\s+(?:the\s+)?(?:systems?|servers?|databases?|drives?|accounts?|repos(?:itories)?))\b",
+    re.IGNORECASE,
+)
+
+
+def _privileged_access_target(state: TicketState) -> str | None:
+    """Return the privileged term in an access request, or None for standard access."""
+    if (state.get("intent") or state.get("category")) != "access_request":
+        return None
+    text = state.get("extracted_text") or state.get("raw_text") or ""
+    m = _PRIVILEGED_ACCESS.search(text)
+    return m.group(0) if m else None
 
 
 def _mentioned_other_user(state: TicketState) -> str | None:
@@ -297,6 +325,21 @@ async def action_node(state: TicketState) -> TicketState:
             "status": "escalated",
         }  # type: ignore[return-value]
 
+    # 3b. Privileged-access gate — admin/production/"every system" access is
+    #     approved by its owner, never auto-provisioned.
+    privileged = _privileged_access_target(state)
+    if privileged is not None:
+        log.warning("action_node.privileged_access_escalate", ticket_id=state.get("ticket_id"), term=privileged)
+        return {
+            **state,
+            "escalated": True,
+            "escalation_reason": (
+                "Privileged or wide-ranging access needs approval from the system owner — "
+                "routed to IT for review."
+            ),
+            "status": "escalated",
+        }  # type: ignore[return-value]
+
     # 4. Destructive gate — block until caller sends action_confirmed=True.
     if intent in _DESTRUCTIVE_INTENTS and not state.get("action_confirmed"):
         log.warning("action_node.awaiting_confirmation", intent=intent)
@@ -304,7 +347,9 @@ async def action_node(state: TicketState) -> TicketState:
             **state,
             "action_confirmed": False,
             "status": "awaiting_confirmation",
-            "escalation_reason": f"Explicit confirmation required to execute '{intent}' on your account.",
+            "escalation_reason": _CONFIRM_PROMPT.get(
+                intent, "This change needs your explicit confirmation before we proceed."
+            ),
             "error": f"Confirmation required for '{intent}'",
         }  # type: ignore[return-value]
 
@@ -318,14 +363,15 @@ async def action_node(state: TicketState) -> TicketState:
             continue  # identity is authoritative — never templated from text
         fmt[k] = str(v) if v is not None else "unknown"
 
-    # Grounded KB answer when the org's documents covered it; otherwise an
-    # accurate standard reply for the action that was performed.
-    template: str = (
-        state.get("resolution_template")
+    # Lead with what was actually done, then add the org's guidance when its
+    # knowledge base covered it — the user must always learn what happened.
+    done: str = _STANDARD_REPLY.get(intent, "Your request has been completed.")
+    guidance: str = (
+        _render(state["resolution_template"], fmt)  # type: ignore[arg-type]
         if state.get("kb_grounded") and state.get("resolution_template")
-        else _STANDARD_REPLY.get(intent, "Your request has been completed, {username}.")
-    )  # type: ignore[assignment]
-    resolution: str = _render(template, fmt)
+        else ""
+    )
+    resolution: str = f"{done} {guidance}".strip()
 
     # 6. Call the enterprise API for the mapped intent.
     endpoint: str | None = _ENDPOINT_MAP.get(intent)

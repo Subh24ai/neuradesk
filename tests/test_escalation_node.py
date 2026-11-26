@@ -67,15 +67,16 @@ class TestEscalationNode:
         assert result["status"] == "escalated"
 
     def test_low_confidence_reason(self) -> None:
-        """confidence < 0.6 produces a reason mentioning the threshold."""
+        """confidence < 0.6 produces a plain-language reason."""
         result = escalation_node(_base_state(confidence=0.45))
-        assert "0.45" in result["escalation_reason"]
-        assert "0.60" in result["escalation_reason"]
+        assert "support agent" in result["escalation_reason"]
+        assert "0.45" not in result["escalation_reason"]  # no internal scores shown to users
 
     def test_api_error_reason(self) -> None:
-        """A non-confirmation error in state['error'] is echoed in the reason."""
+        """A non-confirmation error gives a plain reason; the raw error is not shown."""
         result = escalation_node(_base_state(error="httpx.ConnectTimeout: upstream"))
-        assert "httpx.ConnectTimeout" in result["escalation_reason"]
+        assert "support agent" in result["escalation_reason"]
+        assert "httpx" not in result["escalation_reason"]  # raw errors stay in the logs
 
     def test_confirmation_error_reason(self) -> None:
         """Error containing 'confirmation' gets the destructive-action reason."""
@@ -85,9 +86,9 @@ class TestEscalationNode:
         assert "confirmation" in result["escalation_reason"].lower()
 
     def test_policy_escalation_reason(self) -> None:
-        """No error and no confidence issue → generic 'Escalated by policy' reason."""
+        """No error and no confidence issue → generic plain-language reason."""
         result = escalation_node(_base_state(confidence=0.9, error=None))
-        assert result["escalation_reason"] == "Escalated by policy."
+        assert result["escalation_reason"] == "Routed to a support agent for review."
 
     # ── Assignee group routing ─────────────────────────────────────────────────
 
@@ -227,7 +228,7 @@ class TestSlackNotifications:
 
 
 def test_upstream_authz_reason_is_preserved() -> None:
-    """The authorization gate's specific reason survives escalation (not 'Escalated by policy.')."""
+    """The authorization gate's specific reason survives escalation (not the generic reason)."""
     from unittest.mock import patch
 
     from agents.escalation_node import escalation_node

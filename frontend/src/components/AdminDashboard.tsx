@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { CATEGORY_LABEL, statusMeta } from '../lib/tickets'
 
 interface OrgInfo {
   id: string
@@ -23,6 +24,7 @@ interface Member {
   role: string
   first_name?: string
   last_name?: string
+  is_active?: boolean
   created_at: string
 }
 
@@ -44,8 +46,13 @@ interface TicketRow {
 interface Stats {
   total: number
   resolved: number
+  auto_resolved: number
+  human_resolved: number
   escalated: number
   pending: number
+  processing: number
+  failed: number
+  awaiting_confirmation: number
 }
 
 interface Comment {
@@ -67,53 +74,56 @@ interface KbDoc {
 
 interface Props {
   token: string
+  /** The signed-in admin — they can't change their own role or access. */
+  currentUserId: string
   onNewTicket: () => void
   onToast?: (message: string, variant?: 'success' | 'error' | 'info') => void
 }
 
-const STATUS_CONFIG: Record<string, { badge: string; dot: string }> = {
-  resolved:  { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500' },
-  escalated: { badge: 'bg-amber-50 text-amber-700 border-amber-200',       dot: 'bg-amber-500'   },
-  pending:   { badge: 'bg-indigo-50 text-indigo-700 border-indigo-200',    dot: 'bg-indigo-400'  },
+type Toast = (msg: string, v?: 'success' | 'error' | 'info') => void
+
+// Admin-facing wording for statuses (the employee screens say "With support team").
+const ADMIN_STATUS_LABEL: Record<string, string> = {
+  escalated: 'Needs review',
+  awaiting_confirmation: 'Waiting on employee',
 }
 
-const CATEGORY_LABEL: Record<string, string> = {
-  password_reset: 'Password Reset', access_request: 'Access Request',
-  software_install: 'Software Install', incident_report: 'Incident',
-  leave_approval: 'Leave', unknown: 'Unknown',
+function adminStatusLabel(status: string): string {
+  return ADMIN_STATUS_LABEL[status] ?? statusMeta(status).label
 }
 
+/** "5m ago" for past times, "in 7d" for future ones (e.g. invite expiry). */
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60_000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
+  const future = diff < 0
+  const m = Math.floor(Math.abs(diff) / 60_000)
+  if (m < 1) return future ? 'in under a minute' : 'just now'
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  const span = m < 60 ? `${m}m` : h < 24 ? `${h}h` : `${Math.round(m / 1440)}d`
+  return future ? `in ${span}` : `${span} ago`
 }
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
-
-function StatCard({ label, value, color, icon }: {
-  label: string; value: number
-  color: 'slate' | 'emerald' | 'amber' | 'indigo'
-  icon: React.ReactNode
-}) {
-  const styles = {
-    slate:   { card: 'bg-white border-slate-200',           num: 'text-slate-900', sub: 'text-slate-400', icon: 'bg-slate-100 text-slate-500'     },
-    emerald: { card: 'bg-emerald-50 border-emerald-200',    num: 'text-emerald-800', sub: 'text-emerald-500', icon: 'bg-emerald-100 text-emerald-600' },
-    amber:   { card: 'bg-amber-50 border-amber-200',        num: 'text-amber-800',   sub: 'text-amber-500',   icon: 'bg-amber-100 text-amber-600'     },
-    indigo:  { card: 'bg-indigo-50 border-indigo-200',      num: 'text-indigo-800',  sub: 'text-indigo-500',  icon: 'bg-indigo-100 text-indigo-600'   },
-  }
-  const s = styles[color]
+function Svg({ d, className = 'h-4 w-4' }: { d: string; className?: string }) {
   return (
-    <div className={`rounded-2xl border px-4 py-4 ${s.card}`}>
-      <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-3 ${s.icon}`}>{icon}</div>
-      <p className={`text-2xl font-bold tracking-tight ${s.num}`}>{value}</p>
-      <p className={`text-xs font-semibold mt-0.5 ${s.sub}`}>{label}</p>
-    </div>
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d={d} />
+    </svg>
   )
+}
+
+const I = {
+  check: 'M4.5 12.75l6 6 9-13.5',
+  shield: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+  bolt: 'M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z',
+  clock: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z',
+  inbox: 'M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 00-2.15-1.588H6.911a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661z',
+  book: 'M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25',
+  users: 'M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z',
+  plus: 'M12 4.5v15m7.5-7.5h-15',
+  search: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
+  chevron: 'M19.5 8.25l-7.5 7.5-7.5-7.5',
+  upload: 'M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5',
+  ticket: 'M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 010 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 010-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375z',
 }
 
 // ── Copy button ───────────────────────────────────────────────────────────────
@@ -136,38 +146,39 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-// ── Resolve panel ─────────────────────────────────────────────────────────────
+// ── Resolve panel (shared by the review queue and All tickets) ──────────────
 
 function ResolvePanel({ ticket, token, onDone, onToast }: {
   ticket: TicketRow; token: string
   onDone: (updated: TicketRow) => void
-  onToast?: (msg: string, v?: 'success' | 'error' | 'info') => void
+  onToast?: Toast
 }) {
-  const [note, setNote] = useState(ticket.admin_note || '')
+  const [reply, setReply] = useState(ticket.admin_note || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [comments, setComments] = useState<Comment[]>([])
   const [newComment, setNewComment] = useState('')
-  const [addingComment, setAddingComment] = useState(false)
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const [posting, setPosting] = useState(false)
+  const json = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const needsReply = !reply.trim()
 
   useEffect(() => {
     fetch(`/admin/tickets/${ticket.ticket_id}/comments`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : { comments: [] })
-      .then(d => setComments(d.comments || []))
-  }, [ticket.ticket_id])
+      .then((r) => (r.ok ? r.json() : { comments: [] }))
+      .then((d) => setComments(d.comments || []))
+      .catch(() => { /* non-critical */ })
+  }, [ticket.ticket_id, token])
 
-  async function handleResolve(newStatus: 'resolved' | 'escalated') {
+  async function update(newStatus: 'resolved' | 'escalated') {
     setSaving(true); setError(null)
     try {
       const r = await fetch(`/admin/tickets/${ticket.ticket_id}`, {
-        method: 'PATCH', headers,
-        body: JSON.stringify({ status: newStatus, admin_note: note || undefined }),
+        method: 'PATCH', headers: json,
+        body: JSON.stringify({ status: newStatus, admin_note: reply.trim() || undefined }),
       })
       if (!r.ok) throw new Error((await r.json()).detail?.error ?? `HTTP ${r.status}`)
-      const result = await r.json()
-      onDone(result)
-      onToast?.(newStatus === 'resolved' ? 'Ticket marked as resolved' : 'Ticket escalated', 'success')
+      onDone(await r.json())
+      onToast?.(newStatus === 'resolved' ? 'Resolved — the employee can see your reply.' : 'Moved to the review queue.', 'success')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to update')
     } finally {
@@ -175,96 +186,108 @@ function ResolvePanel({ ticket, token, onDone, onToast }: {
     }
   }
 
-  async function handleAddComment() {
+  async function postComment() {
     if (!newComment.trim()) return
-    setAddingComment(true)
+    setPosting(true)
     try {
       const r = await fetch(`/admin/tickets/${ticket.ticket_id}/comments`, {
-        method: 'POST', headers,
-        body: JSON.stringify({ content: newComment }),
+        method: 'POST', headers: json, body: JSON.stringify({ content: newComment.trim() }),
       })
-      if (r.ok) { const c = await r.json(); setComments(prev => [...prev, c]); setNewComment('') }
+      if (r.ok) { const c = await r.json(); setComments((p) => [...p, c]); setNewComment('') }
+      else onToast?.('Could not send the message.', 'error')
     } finally {
-      setAddingComment(false)
+      setPosting(false)
     }
   }
 
   return (
-    <div className="mt-3 pt-4 border-t border-slate-100 space-y-4 fade-in">
-      {/* Resolution note */}
+    <div className="mt-4 space-y-4 border-t border-slate-100 pt-4 fade-in">
       <div>
-        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Resolution note</label>
-        <textarea
-          rows={2}
-          value={note}
-          onChange={e => setNote(e.target.value)}
-          placeholder="Describe how this was resolved…"
-          className="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none hover:border-slate-300 transition-shadow bg-slate-50/50 focus:bg-white"
-        />
-      </div>
-      {error && <p className="text-xs text-red-600 font-medium">{error}</p>}
-      <div className="flex gap-2">
-        <button
-          onClick={() => handleResolve('resolved')}
-          disabled={saving}
-          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl px-3 py-2.5 transition-colors disabled:opacity-40 shadow-sm"
-        >
-          {saving ? 'Saving…' : (
-            <span className="flex items-center justify-center gap-1.5">
-              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586 4.707 9.293a1 1 0 00-1.414 1.414l4 4a1 1 0 001.414 0l8-8a1 1 0 000-1.414z" clipRule="evenodd" />
-              </svg>
-              Mark resolved
-            </span>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">What the agents found</p>
+          <p className="text-sm text-slate-700">
+            {ticket.category ? (CATEGORY_LABEL[ticket.category] ?? ticket.category) : 'Uncategorised'}
+            {ticket.confidence != null && <span className="text-slate-400"> · {Math.round(ticket.confidence * 100)}% confidence</span>}
+          </p>
+          {ticket.escalation_reason && <p className="mt-1 text-xs leading-relaxed text-amber-700">{ticket.escalation_reason}</p>}
+          {ticket.resolution && (
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">
+              {ticket.status === 'escalated' ? 'AI draft — not shown to the employee: ' : 'Current reply: '}{ticket.resolution}
+            </p>
           )}
+        </div>
+      </div>
+
+      <div>
+        <label htmlFor={`reply-${ticket.ticket_id}`} className="mb-1.5 block text-xs font-bold text-slate-700">Reply to employee</label>
+        <textarea
+          id={`reply-${ticket.ticket_id}`}
+          rows={3}
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          placeholder="Explain what you did or what they should do next…"
+          className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+        />
+        <p className="mt-1 text-[11px] text-slate-400">Shown on the employee’s ticket when you resolve it.</p>
+      </div>
+      {error && <p role="alert" className="text-xs font-medium text-red-600">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => update('resolved')}
+          disabled={saving || needsReply}
+          title={needsReply ? 'Write a reply first so the employee knows the outcome' : undefined}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+        >
+          <Svg d={I.check} className="h-3.5 w-3.5" /> {saving ? 'Saving…' : 'Resolve with reply'}
         </button>
         {ticket.status !== 'escalated' && (
           <button
-            onClick={() => handleResolve('escalated')}
+            onClick={() => update('escalated')}
             disabled={saving}
-            className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl px-3 py-2.5 transition-colors disabled:opacity-40 shadow-sm"
+            className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
           >
-            Escalate
+            Move to review queue
           </button>
         )}
       </div>
 
-      {/* Comments */}
-      <div>
-        <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">
-          Comments {comments.length > 0 && <span className="text-slate-400">({comments.length})</span>}
+      <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+        <p className="mb-2 text-xs font-bold text-slate-700">
+          Messages <span className="font-normal text-slate-400">· visible to the employee</span>
         </p>
         {comments.length > 0 && (
-          <div className="space-y-2 mb-3 max-h-40 overflow-y-auto">
-            {comments.map(c => (
-              <div key={c.id} className="bg-slate-50 border border-slate-100 rounded-xl px-3.5 py-2.5">
-                <p className="text-xs text-slate-700 leading-relaxed">{c.content}</p>
-                <p className="text-[10px] text-slate-400 mt-1 font-medium">{relativeTime(c.created_at)}</p>
-              </div>
+          <ul className="mb-3 max-h-48 space-y-2 overflow-y-auto">
+            {comments.map((c) => (
+              <li key={c.id} className="rounded-lg border border-slate-100 bg-white px-3 py-2">
+                <p className="text-xs leading-relaxed text-slate-700">{c.content}</p>
+                <p className="mt-0.5 text-[10px] text-slate-400">{relativeTime(c.created_at)}</p>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
         <div className="flex gap-2">
           <input
             type="text"
             value={newComment}
-            onChange={e => setNewComment(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAddComment()}
-            placeholder="Add a comment…"
-            className="flex-1 text-xs border border-slate-200 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-slate-300 transition-shadow bg-slate-50/50 focus:bg-white"
+            onChange={(e) => setNewComment(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') postComment() }}
+            placeholder="Ask a question or share an update…"
+            aria-label="Message to the employee"
+            className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
           />
           <button
-            onClick={handleAddComment}
-            disabled={addingComment || !newComment.trim()}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl px-3.5 py-2.5 disabled:opacity-40 transition-colors shadow-sm"
+            onClick={postComment}
+            disabled={posting || !newComment.trim()}
+            className="rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white transition-colors hover:bg-indigo-700 disabled:opacity-40"
           >
-            Post
+            Send
           </button>
         </div>
       </div>
     </div>
   )
 }
+
 
 // ── Invites panel ────────────────────────────────────────────────────────────
 
@@ -444,6 +467,17 @@ function InvitesPanel({ token, invites, onInvitesChange, onToast }: {
 // ── Knowledge base panel ──────────────────────────────────────────────────────
 
 const KB_ACCEPT = '.pdf,.txt,.md,.docx'
+
+/** One file waiting in (or going through) the knowledge-base upload queue. */
+interface QueueItem {
+  id: string
+  file: File
+  title: string
+  status: 'ready' | 'uploading' | 'done' | 'error'
+  error?: string
+  /** A document with this file name or title is already in the knowledge base. */
+  duplicate?: boolean
+}
 const KB_MAX_MB = 10
 
 const FILE_TYPE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -457,12 +491,16 @@ function fileExt(name: string): string {
   return name.includes('.') ? name.split('.').pop()!.toLowerCase() : ''
 }
 
-function KnowledgeBasePanel({ token, onToast }: {
+function KnowledgeBasePanel({ token, onToast, onCountChange }: {
   token: string
   onToast?: (msg: string, v?: 'success' | 'error' | 'info') => void
+  /** Reports the document count so the setup checklist can tick itself off. */
+  onCountChange?: (count: number) => void
 }) {
   const [docs, setDocs] = useState<KbDoc[]>([])
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => { if (!loading) onCountChange?.(docs.length) }, [docs, loading]) // eslint-disable-line react-hooks/exhaustive-deps
   const [mode, setMode] = useState<'write' | 'upload'>('write')
 
   // write mode
@@ -471,11 +509,9 @@ function KnowledgeBasePanel({ token, onToast }: {
   const [saving, setSaving] = useState(false)
   const [writeError, setWriteError] = useState<string | null>(null)
 
-  // upload mode
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
-  const [uploadTitle, setUploadTitle] = useState('')
+  // upload mode — a queue so several files can be added and uploaded together
+  const [queue, setQueue] = useState<QueueItem[]>([])
   const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -512,43 +548,70 @@ function KnowledgeBasePanel({ token, onToast }: {
 
   // ── Upload ─────────────────────────────────────────────────────────────────
 
-  function handleFileSelect(file: File) {
-    setUploadError(null)
-    const ext = fileExt(file.name)
-    if (!['pdf', 'txt', 'md', 'docx'].includes(ext)) {
-      setUploadError(`Unsupported file type ".${ext}". Use PDF, TXT, MD, or DOCX.`)
-      return
-    }
-    if (file.size > KB_MAX_MB * 1024 * 1024) {
-      setUploadError(`File is too large (${(file.size / 1_048_576).toFixed(1)} MB). Max ${KB_MAX_MB} MB.`)
-      return
-    }
-    setUploadFile(file)
-    if (!uploadTitle.trim()) setUploadTitle(file.name.replace(/\.[^.]+$/, ''))
+  /** Validate and queue the chosen files; invalid ones stay visible with the reason. */
+  function addFiles(files: FileList | File[]) {
+    const known = new Set(docs.flatMap(d => [d.file_name?.toLowerCase(), d.title.toLowerCase()]).filter(Boolean))
+    // Copy now: a FileList is live and is emptied when the input is reset below,
+    // before React runs the state updater.
+    const picked = Array.from(files)
+    setQueue(prev => {
+      const next = [...prev]
+      for (const file of picked) {
+        if (next.some(q => q.file.name === file.name && q.file.size === file.size)) continue // picked twice
+        const ext = fileExt(file.name)
+        const title = file.name.replace(/\.[^.]+$/, '')
+        let error: string | undefined
+        if (!['pdf', 'txt', 'md', 'docx'].includes(ext)) error = `Unsupported type ".${ext}" — use PDF, TXT, MD or DOCX`
+        else if (file.size > KB_MAX_MB * 1024 * 1024) error = `Too large (${(file.size / 1_048_576).toFixed(1)} MB) — max ${KB_MAX_MB} MB`
+        else if (file.size === 0) error = 'File is empty'
+        next.push({
+          id: `${file.name}-${file.size}-${file.lastModified}`,
+          file, title,
+          status: error ? 'error' : 'ready',
+          error,
+          duplicate: !error && (known.has(file.name.toLowerCase()) || known.has(title.toLowerCase())),
+        })
+      }
+      return next
+    })
+    if (fileInputRef.current) fileInputRef.current.value = '' // allow re-picking the same file
   }
 
-  async function handleUpload() {
-    if (!uploadFile) return
-    setUploading(true); setUploadError(null)
-    try {
-      const form = new FormData()
-      form.append('file', uploadFile)
-      if (uploadTitle.trim()) form.append('title', uploadTitle.trim())
-      const r = await fetch('/admin/kb/upload', { method: 'POST', headers: authHeaders, body: form })
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({}))
-        throw new Error(body?.detail?.error ?? `HTTP ${r.status}`)
+  function updateItem(id: string, patch: Partial<QueueItem>) {
+    setQueue(prev => prev.map(q => q.id === id ? { ...q, ...patch } : q))
+  }
+
+  async function handleUploadAll() {
+    const pending = queue.filter(q => q.status === 'ready')
+    if (!pending.length) return
+    setUploading(true)
+    let added = 0
+    // One at a time: keeps the server load predictable and the progress readable.
+    for (const item of pending) {
+      updateItem(item.id, { status: 'uploading', error: undefined })
+      try {
+        const form = new FormData()
+        form.append('file', item.file)
+        if (item.title.trim()) form.append('title', item.title.trim())
+        const r = await fetch('/admin/kb/upload', { method: 'POST', headers: authHeaders, body: form })
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}))
+          throw new Error(body?.detail?.error ?? (r.status >= 500 ? 'Server error — try again' : `HTTP ${r.status}`))
+        }
+        const doc: KbDoc = await r.json()
+        setDocs(prev => [doc, ...prev])
+        updateItem(item.id, { status: 'done' })
+        added++
+      } catch (e) {
+        updateItem(item.id, { status: 'error', error: e instanceof Error ? e.message : 'Upload failed' })
       }
-      const doc: KbDoc = await r.json()
-      setDocs(prev => [doc, ...prev])
-      setUploadFile(null); setUploadTitle('')
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      onToast?.(`"${doc.title}" added to knowledge base`, 'success')
-    } catch (e) {
-      setUploadError(e instanceof Error ? e.message : 'Upload failed')
-    } finally {
-      setUploading(false)
     }
+    setUploading(false)
+    const failed = pending.length - added
+    // Clear the ones that made it; keep failures on screen with their reason.
+    setTimeout(() => setQueue(prev => prev.filter(q => q.status !== 'done')), 1200)
+    if (failed === 0) onToast?.(`${added} document${added === 1 ? '' : 's'} added to the knowledge base`, 'success')
+    else onToast?.(`${added} added, ${failed} failed — see the list for details`, added ? 'info' : 'error')
   }
 
   // ── Delete ─────────────────────────────────────────────────────────────────
@@ -578,7 +641,7 @@ function KnowledgeBasePanel({ token, onToast }: {
               {(['write', 'upload'] as const).map(m => (
                 <button
                   key={m}
-                  onClick={() => { setMode(m); setWriteError(null); setUploadError(null) }}
+                  onClick={() => { setMode(m); setWriteError(null) }}
                   className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all capitalize ${
                     mode === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                   }`}
@@ -625,39 +688,32 @@ function KnowledgeBasePanel({ token, onToast }: {
         {/* Upload mode */}
         {mode === 'upload' && (
           <div className="px-5 py-4 space-y-3">
-            {/* Drop zone */}
+            {/* Drop zone — accepts several files; stays available to add more */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="Choose files to upload"
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click() } }}
               onDragOver={e => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
-              onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFileSelect(f) }}
+              onDrop={e => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files) }}
               onClick={() => fileInputRef.current?.click()}
-              className={`relative cursor-pointer rounded-xl border-2 border-dashed px-5 py-8 text-center transition-all ${
-                dragging
-                  ? 'border-indigo-400 bg-indigo-50'
-                  : uploadFile
-                  ? 'border-emerald-300 bg-emerald-50/50'
-                  : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50'
-              }`}
+              className={`relative cursor-pointer rounded-xl border-2 border-dashed text-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                queue.length ? 'px-4 py-3' : 'px-5 py-8'
+              } ${dragging ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50'}`}
             >
               <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 accept={KB_ACCEPT}
                 className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f) }}
+                onChange={e => { if (e.target.files?.length) addFiles(e.target.files) }}
               />
-              {uploadFile ? (
-                <div className="flex items-center justify-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center flex-shrink-0">
-                    <svg className="w-5 h-5 text-emerald-600" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                      <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                    </svg>
-                  </div>
-                  <div className="text-left min-w-0">
-                    <p className="text-sm font-semibold text-slate-800 truncate max-w-[200px]">{uploadFile.name}</p>
-                    <p className="text-xs text-slate-400">{(uploadFile.size / 1024).toFixed(0)} KB · Click to change</p>
-                  </div>
-                </div>
+              {queue.length ? (
+                <p className="text-xs font-semibold text-slate-500">
+                  <span className="text-indigo-600">+ Add more files</span> — or drop them here
+                </p>
               ) : (
                 <>
                   <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center mx-auto mb-3">
@@ -665,43 +721,85 @@ function KnowledgeBasePanel({ token, onToast }: {
                       <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
                     </svg>
                   </div>
-                  <p className="text-sm font-semibold text-slate-700">Drop file here or click to browse</p>
-                  <p className="text-xs text-slate-400 mt-1">PDF, TXT, MD, DOCX — up to {KB_MAX_MB} MB</p>
+                  <p className="text-sm font-semibold text-slate-700">Drop files here or click to browse</p>
+                  <p className="text-xs text-slate-400 mt-1">Select several at once · PDF, TXT, MD, DOCX — up to {KB_MAX_MB} MB each</p>
                 </>
               )}
             </div>
 
-            {/* Title override */}
-            {uploadFile && (
-              <input
-                type="text"
-                value={uploadTitle}
-                onChange={e => setUploadTitle(e.target.value)}
-                placeholder="Document title (optional — defaults to filename)"
-                className="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-slate-300 transition-shadow bg-slate-50/50 focus:bg-white"
-              />
+            {/* Queue */}
+            {queue.length > 0 && (
+              <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200" aria-label="Files to upload">
+                {queue.map(item => (
+                  <li key={item.id} className="flex items-center gap-3 px-3.5 py-2.5">
+                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                      item.status === 'error' ? 'bg-red-50 text-red-500'
+                        : item.status === 'done' ? 'bg-emerald-50 text-emerald-600'
+                        : 'bg-slate-100 text-slate-500'
+                    }`} aria-hidden="true">
+                      {item.status === 'uploading' ? (
+                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                      ) : item.status === 'done' ? (
+                        <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" /></svg>
+                      ) : (
+                        <span className="text-[10px] font-bold uppercase">{fileExt(item.file.name) || '?'}</span>
+                      )}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      {item.status === 'ready' ? (
+                        <input
+                          type="text"
+                          value={item.title}
+                          onChange={e => updateItem(item.id, { title: e.target.value })}
+                          aria-label={`Title for ${item.file.name}`}
+                          className="w-full text-sm font-semibold text-slate-800 bg-transparent border-0 border-b border-transparent hover:border-slate-200 focus:border-indigo-400 focus:outline-none px-0 py-0.5"
+                        />
+                      ) : (
+                        <p className="text-sm font-semibold text-slate-800 truncate">{item.title || item.file.name}</p>
+                      )}
+                      <p className={`text-xs truncate ${item.status === 'error' ? 'text-red-600' : item.duplicate && item.status === 'ready' ? 'text-amber-600' : 'text-slate-400'}`}>
+                        {item.status === 'error' ? item.error
+                          : item.status === 'uploading' ? 'Uploading and extracting…'
+                          : item.status === 'done' ? 'Added'
+                          : item.duplicate ? `${item.file.name} · Already in the knowledge base — uploading adds a second copy`
+                          : `${item.file.name} · ${Math.max(1, Math.round(item.file.size / 1024))} KB`}
+                      </p>
+                    </div>
+                    {(item.status === 'ready' || item.status === 'error') && !uploading && (
+                      <button
+                        type="button"
+                        onClick={() => setQueue(prev => prev.filter(q => q.id !== item.id))}
+                        aria-label={`Remove ${item.file.name}`}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex-shrink-0"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             )}
 
-            {uploadError && (
-              <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-xl px-3.5 py-2.5">
-                <svg className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                </svg>
-                {uploadError}
-              </div>
-            )}
-
-            <button
-              onClick={handleUpload}
-              disabled={uploading || !uploadFile}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl px-4 py-2.5 transition-colors disabled:opacity-40 shadow-sm"
-            >
-              {uploading ? (
-                <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Uploading…</>
-              ) : (
-                <><svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>Upload & extract</>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={handleUploadAll}
+                disabled={uploading || queue.filter(q => q.status === 'ready').length === 0}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl px-4 py-2.5 transition-colors disabled:opacity-40 shadow-sm"
+              >
+                {uploading ? (
+                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Uploading…</>
+                ) : (
+                  <><svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+                  {queue.filter(q => q.status === 'ready').length > 1 ? `Upload ${queue.filter(q => q.status === 'ready').length} documents` : 'Upload document'}</>
+                )}
+              </button>
+              {queue.some(q => q.status === 'error') && !uploading && (
+                <button type="button" onClick={() => setQueue(prev => prev.filter(q => q.status !== 'error'))}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800">
+                  Clear failed
+                </button>
               )}
-            </button>
+            </div>
           </div>
         )}
       </div>
@@ -787,584 +885,577 @@ const GROUP_CONFIG: Record<string, { icon: string; label: string; cls: string }>
   'tier-1-support':{ icon: 'M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z', label: 'Tier-1 Support', cls: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
 }
 
-function EscalatedQueuePanel({ token, onToast }: {
-  token: string
-  onToast?: (msg: string, v?: 'success' | 'error' | 'info') => void
+
+
+// ── Review queue ─────────────────────────────────────────────────────────────
+
+const PRIORITY_RANK: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+
+/** Highest priority first, then oldest first — the order a support team should work in. */
+function triageOrder(a: TicketRow, b: TicketRow): number {
+  const pa = PRIORITY_RANK[(a.priority ?? 'MEDIUM').toUpperCase()] ?? 2
+  const pb = PRIORITY_RANK[(b.priority ?? 'MEDIUM').toUpperCase()] ?? 2
+  return pa - pb || new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+}
+
+function ReviewQueue({ tickets, loading, token, onToast, onChanged }: {
+  tickets: TicketRow[]; loading: boolean; token: string
+  onToast?: Toast
+  onChanged: () => void
 }) {
-  const [tickets, setTickets] = useState<TicketRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [priorityFilter, setPriorityFilter] = useState<string>('')
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [priority, setPriority] = useState('')
 
-  useEffect(() => {
-    fetch('/admin/tickets?status=escalated&limit=100', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : { tickets: [] })
-      .then(d => { setTickets(d.tickets || []); setLoading(false) })
-  }, [token])
+  if (loading) return <div className="h-40 animate-pulse rounded-2xl border border-slate-200 bg-white" />
 
-  function handleResolved(updated: TicketRow) {
-    setTickets(prev => prev.filter(t => t.ticket_id !== updated.ticket_id))
-    setExpandedId(null)
+  if (tickets.length === 0) {
+    return (
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-6 py-10 text-center">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+          <Svg d={I.check} className="h-6 w-6" />
+        </div>
+        <p className="font-bold text-emerald-900">All clear</p>
+        <p className="mt-1 text-sm text-emerald-700">Nothing needs review. New escalations appear here instantly — no refresh needed.</p>
+      </div>
+    )
   }
 
-  const filtered = priorityFilter
-    ? tickets.filter(t => (t.priority ?? 'MEDIUM') === priorityFilter)
-    : tickets
+  const counts = (p: string) => tickets.filter((t) => (t.priority ?? 'MEDIUM').toUpperCase() === p).length
+  const shown = [...tickets].filter((t) => !priority || (t.priority ?? 'MEDIUM').toUpperCase() === priority).sort(triageOrder)
 
-  const PRIORITY_FILTERS = [
-    { val: '',         label: 'All' },
-    { val: 'CRITICAL', label: 'Critical' },
-    { val: 'HIGH',     label: 'High' },
-    { val: 'MEDIUM',   label: 'Medium' },
-    { val: 'LOW',      label: 'Low' },
-  ]
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5">
+        <p className="text-sm text-slate-600">
+          <span className="font-bold text-slate-900">{tickets.length} need{tickets.length === 1 ? 's' : ''} review</span>
+          <span className="text-slate-400"> · highest priority and oldest first</span>
+        </p>
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter by priority">
+          {['', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].filter((p) => !p || counts(p) > 0).map((p) => (
+            <button
+              key={p || 'all'}
+              role="tab"
+              aria-selected={priority === p}
+              onClick={() => setPriority(p)}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                priority === p ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+              }`}
+            >
+              {p ? `${PRIORITY_CONFIG[p].label} ${counts(p)}` : `All ${tickets.length}`}
+            </button>
+          ))}
+        </div>
+      </div>
+      <ul className="divide-y divide-slate-100">
+        {shown.map((t) => {
+          const p = (t.priority ?? 'MEDIUM').toUpperCase()
+          const pc = PRIORITY_CONFIG[p] ?? PRIORITY_CONFIG.MEDIUM
+          const gc = GROUP_CONFIG[t.assignee_group ?? 'tier-1-support'] ?? GROUP_CONFIG['tier-1-support']
+          const open = expanded === t.ticket_id
+          return (
+            <li key={t.ticket_id} className={`px-5 py-4 ${open ? 'bg-slate-50/60' : ''}`}>
+              <button onClick={() => setExpanded(open ? null : t.ticket_id)} aria-expanded={open} className="flex w-full items-start gap-3 text-left">
+                <span className="min-w-0 flex-1">
+                  <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${pc.badge}`}>{pc.label}</span>
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold ${gc.cls}`}>{gc.label}</span>
+                    <span className="text-[11px] text-slate-400">waiting {relativeTime(t.created_at).replace(' ago', '')}</span>
+                  </span>
+                  <span className="block text-sm font-semibold leading-snug text-slate-900">{t.raw_text ?? '—'}</span>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    {t.user_email ?? 'Unknown employee'}
+                    {t.category && <> · {CATEGORY_LABEL[t.category] ?? t.category}</>}
+                  </span>
+                  {t.escalation_reason && !open && <span className="mt-1.5 block text-xs text-amber-700">Why: {t.escalation_reason}</span>}
+                </span>
+                <span className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">
+                  {open ? 'Close' : 'Review'}
+                </span>
+              </button>
+              {open && (
+                <ResolvePanel ticket={t} token={token} onToast={onToast} onDone={() => { setExpanded(null); onChanged() }} />
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
 
-  if (loading) return <div className="bg-white rounded-2xl border border-slate-200 h-32 animate-pulse" />
+// ── All tickets ──────────────────────────────────────────────────────────────
+
+const ALL_FILTERS: { key: string; label: string; statuses: string[]; count: (s: Stats) => number }[] = [
+  { key: 'all', label: 'All', statuses: [], count: (s) => s.total },
+  { key: 'review', label: 'Needs review', statuses: ['escalated'], count: (s) => s.escalated },
+  { key: 'waiting', label: 'Waiting on employee', statuses: ['awaiting_confirmation'], count: (s) => s.awaiting_confirmation },
+  { key: 'resolved', label: 'Resolved', statuses: ['resolved'], count: (s) => s.resolved },
+  { key: 'progress', label: 'In progress', statuses: ['pending', 'processing'], count: (s) => s.pending + s.processing },
+  { key: 'failed', label: 'Failed', statuses: ['failed'], count: (s) => s.failed },
+]
+
+function AllTickets({ token, stats, version, onToast, onChanged }: {
+  token: string; stats: Stats | null; version: number
+  onToast?: Toast
+  onChanged: () => void
+}) {
+  const LIMIT = 20
+  const [tickets, setTickets] = useState<TicketRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [offset, setOffset] = useState(0)
+  const [filter, setFilter] = useState('all')
+  const [query, setQuery] = useState('')
+  const [q, setQ] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  useEffect(() => { const id = setTimeout(() => setQ(query.trim()), 300); return () => clearTimeout(id) }, [query])
+
+  const load = useCallback(async (newOffset: number, silent = false) => {
+    if (!silent) setLoading(true)
+    try {
+      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(newOffset) })
+      const st = ALL_FILTERS.find((f) => f.key === filter)!.statuses
+      if (st.length) params.set('status', st.join(','))
+      if (q) params.set('q', q)
+      const r = await fetch(`/admin/tickets?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (r.ok) { const d = await r.json(); setTickets(d.tickets); setTotal(d.total); setOffset(newOffset) }
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }, [token, filter, q])
+
+  useEffect(() => { load(0) }, [load])
+  useEffect(() => { if (version > 0) load(offset, true) }, [version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
-      {/* Header card */}
-      <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 flex items-start gap-4">
-        <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
-          <svg className="w-5 h-5 text-amber-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
-        </div>
-        <div>
-          <p className="text-sm font-bold text-amber-900">Human review required</p>
-          <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
-            {tickets.length === 0
-              ? 'No tickets awaiting review — all clear.'
-              : `${tickets.length} ticket${tickets.length !== 1 ? 's' : ''} need${tickets.length === 1 ? 's' : ''} human attention. Resolve each by adding a note and marking it done.`}
-          </p>
-        </div>
+      <label className="relative block">
+        <span className="sr-only">Search tickets</span>
+        <Svg d={I.search} className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by request, reply, category or employee email…"
+          className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+        />
+      </label>
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Filter by status">
+        {ALL_FILTERS.filter((f) => f.key === 'all' || f.key === filter || (stats && f.count(stats) > 0)).map((f) => (
+          <button
+            key={f.key}
+            role="tab"
+            aria-selected={filter === f.key}
+            onClick={() => { setFilter(f.key); setExpanded(null) }}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              filter === f.key ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+            }`}
+          >
+            {f.label}
+            {stats && <span className={`rounded-full px-1.5 text-[10px] ${filter === f.key ? 'bg-white/20' : 'bg-slate-100'}`}>{f.count(stats)}</span>}
+          </button>
+        ))}
       </div>
 
-      {tickets.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          {/* Filter bar */}
-          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-sm font-bold text-slate-900">
-              Escalated tickets
-              <span className="text-slate-400 font-normal ml-2 text-xs">({filtered.length}{priorityFilter ? ` of ${tickets.length}` : ''})</span>
-            </p>
-            <div className="flex gap-0.5 bg-slate-100 rounded-lg p-0.5">
-              {PRIORITY_FILTERS.map(({ val, label }) => (
-                <button
-                  key={val}
-                  onClick={() => setPriorityFilter(val)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                    priorityFilter === val ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {filtered.length === 0 ? (
-            <p className="px-5 py-8 text-sm text-slate-400 text-center">No {priorityFilter.toLowerCase()} priority tickets.</p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {filtered.map((t) => {
-                const priority = (t.priority ?? 'MEDIUM').toUpperCase()
-                const pCfg = PRIORITY_CONFIG[priority] ?? PRIORITY_CONFIG.MEDIUM
-                const group = t.assignee_group ?? 'tier-1-support'
-                const gCfg = GROUP_CONFIG[group] ?? GROUP_CONFIG['tier-1-support']
-                const isOpen = expandedId === t.ticket_id
-
-                return (
-                  <div key={t.ticket_id} className={`px-5 py-4 transition-colors ${isOpen ? 'bg-slate-50/60' : 'hover:bg-slate-50/40'}`}>
-                    {/* Ticket header row */}
-                    <div
-                      className="flex items-start gap-3 cursor-pointer group"
-                      onClick={() => setExpandedId(isOpen ? null : t.ticket_id)}
-                    >
-                      {/* Priority dot */}
-                      <div className={`w-2 h-2 rounded-full flex-shrink-0 mt-2 ${
-                        priority === 'CRITICAL' ? 'bg-red-500' :
-                        priority === 'HIGH' ? 'bg-orange-400' :
-                        priority === 'MEDIUM' ? 'bg-amber-400' : 'bg-slate-300'
-                      }`} aria-hidden="true" />
-
-                      <div className="flex-1 min-w-0">
-                        {/* Top row: ID + badges */}
-                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                          <span className="text-[10px] font-mono font-semibold text-slate-400">
-                            #{t.ticket_id.slice(0, 8).toUpperCase()}
-                          </span>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${pCfg.badge}`}>
-                            {pCfg.label}
-                          </span>
-                          <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${gCfg.cls}`}>
-                            <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path strokeLinecap="round" strokeLinejoin="round" d={gCfg.icon} />
-                            </svg>
-                            {gCfg.label}
-                          </span>
-                          {t.category && (
-                            <span className="text-[10px] font-semibold text-slate-400">{CATEGORY_LABEL[t.category] ?? t.category}</span>
-                          )}
-                        </div>
-
-                        {/* Raw request text */}
-                        {t.raw_text && (
-                          <p className="text-sm text-slate-800 font-medium line-clamp-2 leading-snug mb-1.5">
-                            {t.raw_text}
-                          </p>
-                        )}
-
-                        {/* Escalation reason */}
-                        {t.escalation_reason && (
-                          <div className="flex items-start gap-1.5 mb-1.5">
-                            <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                              <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                            </svg>
-                            <p className="text-xs text-amber-700 leading-snug">{t.escalation_reason}</p>
-                          </div>
-                        )}
-
-                        {/* Meta row */}
-                        <div className="flex items-center gap-2 text-[11px] text-slate-400 flex-wrap">
-                          {t.user_email && (
-                            <span className="flex items-center gap-1">
-                              <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                <path d="M3 4a2 2 0 00-2 2v1.161l8.441 4.221a1.25 1.25 0 001.118 0L19 7.162V6a2 2 0 00-2-2H3z" />
-                                <path d="M19 8.839l-7.77 3.885a2.75 2.75 0 01-2.46 0L1 8.839V14a2 2 0 002 2h14a2 2 0 002-2V8.839z" />
-                              </svg>
-                              {t.user_email}
-                            </span>
-                          )}
-                          <span>·</span>
-                          <span>{relativeTime(t.created_at)}</span>
-                        </div>
-                      </div>
-
-                      {/* Expand chevron */}
-                      <svg
-                        className={`w-4 h-4 text-slate-300 group-hover:text-slate-500 transition-all flex-shrink-0 mt-1 ${isOpen ? 'rotate-180 text-slate-500' : ''}`}
-                        viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
-                      >
-                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-
-                    {/* Expanded: resolve + comment panel */}
-                    {isOpen && (
-                      <ResolvePanel
-                        ticket={t}
-                        token={token}
-                        onToast={onToast}
-                        onDone={(updated) => handleResolved(updated as TicketRow)}
-                      />
-                    )}
-                  </div>
-                )
-              })}
-            </div>
+      {loading ? (
+        <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-16 animate-pulse rounded-xl border border-slate-200 bg-white" />)}</div>
+      ) : tickets.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center">
+          <p className="font-semibold text-slate-800">{q ? `No tickets match “${q}”` : 'No tickets here yet'}</p>
+          {(q || filter !== 'all') && (
+            <button onClick={() => { setQuery(''); setQ(''); setFilter('all') }} className="mt-3 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+              Clear filters
+            </button>
           )}
+        </div>
+      ) : (
+        <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          {tickets.map((t) => {
+            const meta = statusMeta(t.status)
+            const open = expanded === t.ticket_id
+            return (
+              <li key={t.ticket_id} className={`px-5 py-3.5 ${open ? 'bg-slate-50/60' : ''}`}>
+                <button onClick={() => setExpanded(open ? null : t.ticket_id)} aria-expanded={open} className="flex w-full items-start gap-3 text-left">
+                  <span className={`mt-[7px] h-2 w-2 flex-shrink-0 rounded-full ${meta.dot}`} aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-sm font-medium text-slate-900 ${open ? '' : 'truncate'}`}>{t.raw_text ?? '—'}</span>
+                    <span className="mt-0.5 block truncate text-xs text-slate-500">
+                      {t.user_email ?? 'Unknown'}{t.category && <> · {CATEGORY_LABEL[t.category] ?? t.category}</>} · {relativeTime(t.created_at)}
+                    </span>
+                  </span>
+                  <span className={`flex-shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${meta.badge}`}>{adminStatusLabel(t.status)}</span>
+                  <Svg d={I.chevron} className={`mt-1 h-4 w-4 flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+                </button>
+                {open && (
+                  <ResolvePanel ticket={t} token={token} onToast={onToast} onDone={() => { setExpanded(null); load(offset, true); onChanged() }} />
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
+      {!loading && total > LIMIT && (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-500">{offset + 1}–{Math.min(offset + LIMIT, total)} of {total}</span>
+          <div className="flex gap-2">
+            <button disabled={offset === 0} onClick={() => load(Math.max(0, offset - LIMIT))} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40">← Previous</button>
+            <button disabled={offset + LIMIT >= total} onClick={() => load(offset + LIMIT)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40">Next →</button>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Setup checklist & KPIs ───────────────────────────────────────────────────
 
-export default function AdminDashboard({ token, onNewTicket, onToast }: Props) {
+function SetupChecklist({ steps, onDismiss }: {
+  steps: { label: string; hint: string; done: boolean; action: string; onClick: () => void }[]
+  onDismiss: () => void
+}) {
+  const done = steps.filter((s) => s.done).length
+  return (
+    <section className="rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-white px-5 py-4" aria-labelledby="setup-h">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 id="setup-h" className="text-sm font-bold text-slate-900">Get your helpdesk ready</h3>
+          <p className="text-xs text-slate-500">{done} of {steps.length} done</p>
+        </div>
+        <button onClick={onDismiss} className="text-xs font-semibold text-slate-400 hover:text-slate-600">Hide</button>
+      </div>
+      <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-indigo-100">
+        <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${(done / steps.length) * 100}%` }} />
+      </div>
+      <ol className="grid gap-2.5 sm:grid-cols-3">
+        {steps.map((s, i) => (
+          <li key={s.label} className={`rounded-xl border px-3.5 py-3 ${s.done ? 'border-emerald-200 bg-emerald-50/60' : 'border-slate-200 bg-white'}`}>
+            <div className="mb-1 flex items-center gap-2">
+              <span className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${s.done ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                {s.done ? <Svg d={I.check} className="h-3 w-3" /> : i + 1}
+              </span>
+              <span className={`text-sm font-semibold ${s.done ? 'text-emerald-800 line-through decoration-emerald-300' : 'text-slate-900'}`}>{s.label}</span>
+            </div>
+            <p className="mb-2 text-xs leading-relaxed text-slate-500">{s.hint}</p>
+            {!s.done && (
+              <button onClick={s.onClick} className="text-xs font-bold text-indigo-600 hover:text-indigo-800">{s.action} →</button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
+function Kpi({ label, value, sub, icon, tone, onClick }: {
+  label: string; value: string; sub: string; icon: string
+  tone: 'rose' | 'emerald' | 'indigo' | 'slate' | 'amber'
+  onClick?: () => void
+}) {
+  const t = {
+    rose: 'bg-rose-100 text-rose-600', emerald: 'bg-emerald-100 text-emerald-600',
+    indigo: 'bg-indigo-100 text-indigo-600', slate: 'bg-slate-100 text-slate-500', amber: 'bg-amber-100 text-amber-600',
+  }[tone]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick}
+      className={`rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-left shadow-sm transition-shadow ${onClick ? 'hover:shadow-md' : 'cursor-default'} ${tone === 'rose' ? 'ring-1 ring-rose-200' : ''}`}
+    >
+      <div className="flex items-center gap-2">
+        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${t}`}><Svg d={icon} className="h-4 w-4" /></span>
+        <span className="text-xs font-semibold text-slate-500">{label}</span>
+      </div>
+      <p className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">{value}</p>
+      <p className="mt-0.5 text-[11px] text-slate-400">{sub}</p>
+    </button>
+  )
+}
+
+// ── Member row (role & access management) ───────────────────────────────────
+
+function MemberRow({ m, isSelf, token, onToast, onChanged }: {
+  m: Member; isSelf: boolean; token: string
+  onToast?: Toast
+  onChanged: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const active = m.is_active !== false
+  const name = m.first_name ? `${m.first_name} ${m.last_name ?? ''}`.trim() : null
+  const initials = (m.first_name?.[0] ?? m.email[0]).toUpperCase() + (m.last_name?.[0] ?? '').toUpperCase()
+
+  async function update(body: { role?: string; is_active?: boolean }, done: string) {
+    setBusy(true)
+    try {
+      const r = await fetch(`/orgs/members/${m.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) { onToast?.(d?.detail?.error ?? 'Could not update this member.', 'error'); return }
+      onToast?.(done, 'success')
+      onChanged()
+    } finally {
+      setBusy(false); setConfirming(false)
+    }
+  }
+
+  return (
+    <li className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 ${active ? '' : 'bg-slate-50'}`}>
+      <div className="flex min-w-0 items-center gap-3">
+        <span className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${active ? 'bg-gradient-to-br from-indigo-400 to-indigo-600' : 'bg-slate-300'}`}>{initials}</span>
+        <div className="min-w-0">
+          <p className={`truncate text-sm font-semibold ${active ? 'text-slate-900' : 'text-slate-500'}`}>
+            {name ?? m.email}{isSelf && <span className="ml-1.5 text-xs font-normal text-slate-400">(you)</span>}
+          </p>
+          <p className="truncate text-xs text-slate-500">{name ? `${m.email} · ` : ''}joined {relativeTime(m.created_at)}</p>
+        </div>
+      </div>
+      <div className="flex flex-shrink-0 items-center gap-2">
+        {!active && <span className="rounded-full bg-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600">Deactivated</span>}
+        <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold capitalize ${m.role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>{m.role}</span>
+        {!isSelf && active && !confirming && (
+          <>
+            <button
+              onClick={() => update({ role: m.role === 'admin' ? 'member' : 'admin' }, m.role === 'admin' ? `${name ?? m.email} is now a member.` : `${name ?? m.email} is now an admin.`)}
+              disabled={busy}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {m.role === 'admin' ? 'Make member' : 'Make admin'}
+            </button>
+            <button onClick={() => setConfirming(true)} disabled={busy}
+              className="rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+              Deactivate
+            </button>
+          </>
+        )}
+        {!isSelf && active && confirming && (
+          <span className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-700">Sign them out and block access?</span>
+            <button onClick={() => update({ is_active: false }, `${name ?? m.email} has been deactivated and signed out.`)} disabled={busy}
+              className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+              {busy ? 'Working…' : 'Deactivate'}
+            </button>
+            <button onClick={() => setConfirming(false)} className="px-1 text-xs font-semibold text-slate-500 hover:text-slate-700">Cancel</button>
+          </span>
+        )}
+        {!isSelf && !active && (
+          <button onClick={() => update({ is_active: true }, `${name ?? m.email} can sign in again.`)} disabled={busy}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            Reactivate
+          </button>
+        )}
+      </div>
+    </li>
+  )
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
+type AdminTab = 'review' | 'tickets' | 'kb' | 'people'
+
+function dismissKey(orgId: string) { return `nd_setup_dismissed_${orgId}` }
+
+export default function AdminDashboard({ token, currentUserId, onNewTicket, onToast }: Props) {
   const [org, setOrg] = useState<OrgInfo | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
   const [members, setMembers] = useState<Member[]>([])
   const [invites, setInvites] = useState<Invite[]>([])
-  const [tickets, setTickets] = useState<TicketRow[]>([])
-  const [ticketTotal, setTicketTotal] = useState(0)
-  const [ticketOffset, setTicketOffset] = useState(0)
-  const [statusFilter, setStatusFilter] = useState('')
+  const [kbCount, setKbCount] = useState<number | null>(null)
+  const [queue, setQueue] = useState<TicketRow[]>([])
+  const [queueLoading, setQueueLoading] = useState(true)
   const [loading, setLoading] = useState(true)
-  const [expandedTicket, setExpandedTicket] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'escalated' | 'tickets' | 'members' | 'invites' | 'kb'>('escalated')
-  const sseRef = useRef<EventSource | null>(null)
+  const [live, setLive] = useState(false)
+  const [tab, setTab] = useState<AdminTab>('review')
+  const [ticketsVersion, setTicketsVersion] = useState(0)
+  const [setupHidden, setSetupHidden] = useState(false)
 
-  const headers = { Authorization: `Bearer ${token}` }
-  const LIMIT = 20
+  const loadStats = useCallback(async () => {
+    try {
+      const r = await fetch('/admin/stats', { headers: { Authorization: `Bearer ${token}` } })
+      if (r.ok) setStats(await r.json())
+    } catch { /* keep last */ }
+  }, [token])
 
-  async function loadTickets(offset: number, sf: string) {
-    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) })
-    if (sf) params.set('status', sf)
-    const r = await fetch(`/admin/tickets?${params}`, { headers })
-    if (!r.ok) return
-    const data = await r.json()
-    setTickets(data.tickets)
-    setTicketTotal(data.total)
-    setTicketOffset(offset)
-  }
+  const loadQueue = useCallback(async () => {
+    try {
+      const r = await fetch('/admin/tickets?status=escalated&limit=100', { headers: { Authorization: `Bearer ${token}` } })
+      if (r.ok) setQueue((await r.json()).tickets ?? [])
+    } finally {
+      setQueueLoading(false)
+    }
+  }, [token])
+
+  const loadPeople = useCallback(async () => {
+    const h = { headers: { Authorization: `Bearer ${token}` } }
+    try {
+      const [m, i] = await Promise.all([fetch('/orgs/members', h), fetch('/admin/invites', h)])
+      if (m.ok) setMembers((await m.json()).members)
+      if (i.ok) setInvites((await i.json()).invites)
+    } catch { /* keep last */ }
+  }, [token])
+
+  const refreshAll = useCallback(() => {
+    loadStats(); loadQueue(); loadPeople(); setTicketsVersion((v) => v + 1)
+  }, [loadStats, loadQueue, loadPeople])
 
   useEffect(() => {
-    // JWT in query param required — EventSource API has no header support. Acceptable for internal enterprise tool.
-    const sse = new EventSource(`/admin/stream?token=${encodeURIComponent(token)}`)
-    sseRef.current = sse
-
-    sse.onmessage = (e: MessageEvent) => {
-      try {
-        const ticket: TicketRow = JSON.parse(e.data as string)
-        setTickets(prev => {
-          const idx = prev.findIndex(t => t.ticket_id === ticket.ticket_id)
-          if (idx >= 0) {
-            const next = [...prev]
-            next[idx] = { ...prev[idx], ...ticket }
-            return next
-          }
-          return [ticket, ...prev]
-        })
-        fetch('/admin/stats', { headers })
-          .then(r => r.ok ? r.json() : null)
-          .then(d => d && setStats(d as Stats))
-        if (ticket.status === 'escalated') {
-          onToast?.(`New escalation from ${ticket.user_email ?? 'unknown user'}`, 'error')
-        }
-      } catch { /* ignore malformed events */ }
-    }
-
+    const h = { headers: { Authorization: `Bearer ${token}` } }
     async function load() {
       setLoading(true)
-      const [orgR, statsR, membersR, invitesR] = await Promise.all([
-        fetch('/orgs/me', { headers }),
-        fetch('/admin/stats', { headers }),
-        fetch('/orgs/members', { headers }),
-        fetch('/admin/invites', { headers }),
+      const [orgR, membersR, invitesR, kbR] = await Promise.all([
+        fetch('/orgs/me', h), fetch('/orgs/members', h), fetch('/admin/invites', h), fetch('/admin/kb', h),
       ])
-      if (orgR.ok) setOrg(await orgR.json())
-      if (statsR.ok) setStats(await statsR.json())
+      if (orgR.ok) {
+        const o: OrgInfo = await orgR.json()
+        setOrg(o)
+        try { setSetupHidden(localStorage.getItem(dismissKey(o.id)) === '1') } catch { /* storage unavailable */ }
+      }
       if (membersR.ok) setMembers((await membersR.json()).members)
       if (invitesR.ok) setInvites((await invitesR.json()).invites)
-      await loadTickets(0, '')
+      if (kbR.ok) setKbCount((await kbR.json()).total ?? 0)
+      await Promise.all([loadStats(), loadQueue()])
       setLoading(false)
     }
     load()
 
-    return () => {
-      sse.close()
-      sseRef.current = null
+    // Live updates. EventSource can't send headers, so the JWT goes in the query string.
+    const sse = new EventSource(`/admin/stream?token=${encodeURIComponent(token)}`)
+    sse.onopen = () => setLive(true)
+    sse.onerror = () => setLive(false)
+    sse.onmessage = (e: MessageEvent) => {
+      try {
+        const ev = JSON.parse(e.data as string) as Partial<TicketRow>
+        if (ev.status === 'escalated') onToast?.(`New ticket needs review${ev.user_email ? ` — ${ev.user_email}` : ''}`, 'info')
+      } catch { /* ignore malformed events */ }
+      setLive(true)
+      refreshAll()
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
-
-  async function handleStatusFilter(s: string) {
-    setStatusFilter(s)
-    await loadTickets(0, s)
-  }
-
-  function handleTicketUpdated(updated: TicketRow) {
-    setTickets(prev => prev.map(t => t.ticket_id === updated.ticket_id ? updated : t))
-    if (stats) {
-      fetch('/admin/stats', { headers }).then(r => r.ok ? r.json() : null).then(d => d && setStats(d))
-    }
-  }
+    return () => sse.close()
+  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
       <div className="space-y-4 fade-in">
-        {[1, 2, 3].map(i => <div key={i} className="bg-white rounded-2xl border border-slate-200 h-24 animate-pulse" />)}
+        <div className="h-10 w-48 animate-pulse rounded-lg bg-slate-200" />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-24 animate-pulse rounded-2xl border border-slate-200 bg-white" />)}</div>
+        <div className="h-48 animate-pulse rounded-2xl border border-slate-200 bg-white" />
       </div>
     )
   }
 
-  const activeInvites = invites.filter(i => !i.used_at && (!i.expires_at || new Date(i.expires_at) > new Date())).length
-
-  const TABS = [
-    { key: 'escalated' as const, label: 'Escalated',     count: stats?.escalated ?? undefined, amber: true },
-    { key: 'tickets'   as const, label: 'Tickets',        count: ticketTotal > 0 ? ticketTotal : undefined, amber: false },
-    { key: 'members'   as const, label: 'Members',        count: members.length > 0 ? members.length : undefined, amber: false },
-    { key: 'invites'   as const, label: 'Invites',        count: activeInvites > 0 ? activeInvites : undefined, amber: false },
-    { key: 'kb'        as const, label: 'KB',             count: undefined as number | undefined, amber: false },
+  const s = stats
+  const autoRate = s && s.total > 0 ? `${Math.round((s.auto_resolved / s.total) * 100)}%` : '—'
+  const steps = [
+    { label: 'Upload your policies', hint: 'Answers come from your own documents — PDF, Word, Markdown or text.', done: (kbCount ?? 0) > 0, action: 'Upload a policy', onClick: () => setTab('kb') },
+    { label: 'Invite your team', hint: 'Create a single-use invite code for each colleague.', done: members.length > 1 || invites.length > 0, action: 'Invite people', onClick: () => setTab('people') },
+    { label: 'Try a test ticket', hint: 'See the agents resolve a request end to end.', done: (s?.total ?? 0) > 0, action: 'Submit a ticket', onClick: onNewTicket },
   ]
+  const showSetup = !setupHidden && steps.some((st) => !st.done)
 
-  const TICKET_FILTERS = [
-    { val: '', label: 'All' },
-    { val: 'resolved',  label: 'Resolved'  },
-    { val: 'escalated', label: 'Escalated' },
-    { val: 'pending',   label: 'Pending'   },
+  const TABS: { key: AdminTab; label: string; count?: number; urgent?: boolean }[] = [
+    { key: 'review', label: 'Needs review', count: queue.length, urgent: queue.length > 0 },
+    { key: 'tickets', label: 'All tickets', count: s?.total },
+    { key: 'kb', label: 'Knowledge base', count: kbCount ?? undefined },
+    { key: 'people', label: 'People', count: members.length },
   ]
 
   return (
-    <div className="fade-in space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+    <div className="space-y-6 fade-in">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-1">
-              Admin
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Overview</h2>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${live ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}
+              title={live ? 'Receiving ticket updates in real time' : 'Reconnecting to live updates…'}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${live ? 'animate-pulse bg-emerald-500' : 'bg-slate-400'}`} aria-hidden="true" />
+              {live ? 'Live' : 'Connecting'}
             </span>
           </div>
-          <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Dashboard</h2>
-          {org?.name && <p className="mt-0.5 text-sm text-slate-500">{org.name}</p>}
+          <p className="mt-1 text-sm text-slate-500">Your organisation’s helpdesk at a glance.</p>
         </div>
-        <button
-          onClick={onNewTicket}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors shadow-sm hover:shadow-md flex-shrink-0"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-          </svg>
-          New ticket
-        </button>
-      </div>
-
-      {/* Stats */}
-      {stats && (() => {
-        const resolutionRate = stats.total > 0 ? Math.round(stats.resolved / stats.total * 100) : 0
-        return (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatCard label="Total tickets" value={stats.total} color="slate" icon={
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
-            } />
-            <div className="rounded-2xl border px-4 py-4 bg-emerald-50 border-emerald-200">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-3 bg-emerald-100 text-emerald-600">
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" /></svg>
-              </div>
-              <p className="text-2xl font-bold tracking-tight text-emerald-800">{stats.resolved}</p>
-              <p className="text-xs font-semibold mt-0.5 text-emerald-500">Resolved</p>
-              {stats.total > 0 && (
-                <div className="mt-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-bold text-emerald-600">{resolutionRate}% rate</span>
-                  </div>
-                  <div className="h-1 bg-emerald-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-emerald-500 rounded-full transition-all" style={{width: `${resolutionRate}%`}} />
-                  </div>
-                </div>
-              )}
-            </div>
-            <StatCard label="Escalated" value={stats.escalated} color="amber" icon={
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" /></svg>
-            } />
-            <StatCard label="Pending" value={stats.pending} color="indigo" icon={
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clipRule="evenodd" /></svg>
-            } />
-          </div>
-        )
-      })()}
-
-      {/* Org info strip */}
-      {org && (
-        <div className="bg-white rounded-2xl border border-slate-200 px-5 py-3.5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-indigo-100 flex items-center justify-center flex-shrink-0">
-              <svg className="w-4 h-4 text-indigo-600" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                <path fillRule="evenodd" d="M4 16.5v-13h-.25a.75.75 0 010-1.5h12.5a.75.75 0 010 1.5H16v13h.25a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75v-2.5a.75.75 0 00-.75-.75h-2.5a.75.75 0 00-.75.75v2.5a.75.75 0 01-.75.75h-3.5a.75.75 0 010-1.5H4zm3-11a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5A.75.75 0 017 5.5zm.75 2.25a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-.75 4a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zm5.25-6a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-.75 4a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75z" clipRule="evenodd" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-900">{org.name}</p>
-              <p className="text-xs text-slate-400 font-mono">{org.slug}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
-            {members.length} member{members.length !== 1 ? 's' : ''}
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
-        {TABS.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`flex-1 py-2 px-1 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === tab.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            {tab.label}
-            {tab.count !== undefined && tab.count > 0 && (
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                tab.amber && activeTab !== tab.key
-                  ? 'bg-amber-100 text-amber-700'
-                  : activeTab === tab.key
-                  ? 'bg-slate-100 text-slate-600'
-                  : 'bg-slate-200/70 text-slate-500'
-              }`}>
-                {tab.count}
-              </span>
-            )}
+        <div className="flex gap-2">
+          <button onClick={() => setTab('people')} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
+            <Svg d={I.users} /> Invite people
           </button>
-        ))}
+          <button onClick={() => setTab('kb')} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700">
+            <Svg d={I.upload} /> Upload policy
+          </button>
+        </div>
       </div>
 
-      {/* ── Escalated tab ── */}
-      {activeTab === 'escalated' && (
-        <EscalatedQueuePanel token={token} onToast={onToast} />
-      )}
-
-      {/* ── Members tab ── */}
-      {activeTab === 'members' && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900">
-              Members
-              <span className="text-slate-400 font-normal ml-2 text-xs">({members.length})</span>
-            </h3>
-          </div>
-          {members.length === 0 ? (
-            <p className="px-5 py-8 text-sm text-slate-400 text-center">No verified members yet.</p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {members.map((m) => {
-                const initials = m.first_name && m.last_name
-                  ? `${m.first_name[0]}${m.last_name[0]}`.toUpperCase()
-                  : m.email.slice(0, 2).toUpperCase()
-                const fullName = m.first_name ? `${m.first_name} ${m.last_name ?? ''}`.trim() : null
-                return (
-                <div key={m.id} className="px-5 py-3.5 flex items-center justify-between hover:bg-slate-50/60 transition-colors">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center flex-shrink-0 shadow-sm">
-                      <span className="text-[11px] font-bold text-white">{initials}</span>
-                    </div>
-                    <div className="min-w-0">
-                      {fullName && <p className="text-sm text-slate-900 font-semibold truncate">{fullName}</p>}
-                      <p className={`truncate ${fullName ? 'text-xs text-slate-400' : 'text-sm text-slate-800 font-medium'}`}>{m.email}</p>
-                      <p className="text-[11px] text-slate-300 mt-0.5">{relativeTime(m.created_at)}</p>
-                    </div>
-                  </div>
-                  <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 ${
-                    m.role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'
-                  }`}>
-                    {m.role}
-                  </span>
-                </div>
-              )})}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Invites tab ── */}
-      {activeTab === 'invites' && (
-        <InvitesPanel
-          token={token}
-          invites={invites}
-          onInvitesChange={setInvites}
-          onToast={onToast}
+      {showSetup && (
+        <SetupChecklist
+          steps={steps}
+          onDismiss={() => {
+            setSetupHidden(true)
+            try { if (org) localStorage.setItem(dismissKey(org.id), '1') } catch { /* storage unavailable */ }
+          }}
         />
       )}
 
-      {/* ── KB tab ── */}
-      {activeTab === 'kb' && <KnowledgeBasePanel token={token} onToast={onToast} />}
-
-      {/* ── Tickets tab ── */}
-      {activeTab === 'tickets' && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
-            <h3 className="text-sm font-bold text-slate-900">
-              All tickets
-              <span className="text-slate-400 font-normal ml-2 text-xs">({ticketTotal})</span>
-            </h3>
-            <div className="flex gap-0.5 bg-slate-100 rounded-lg p-0.5 overflow-x-auto scrollbar-none">
-              {TICKET_FILTERS.map(({ val, label }) => (
-                <button
-                  key={val}
-                  onClick={() => handleStatusFilter(val)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all whitespace-nowrap ${
-                    statusFilter === val ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {tickets.length === 0 ? (
-            <div className="px-5 py-10 text-center">
-              <p className="text-sm text-slate-400 font-medium">No tickets match this filter.</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {tickets.map((t) => {
-                const cfg = STATUS_CONFIG[t.status] ?? STATUS_CONFIG.pending
-                return (
-                  <div key={t.ticket_id} className="px-5 py-4 hover:bg-slate-50/60 transition-colors">
-                    <div
-                      className="flex items-start justify-between gap-4 cursor-pointer group"
-                      onClick={() => setExpandedTicket(expandedTicket === t.ticket_id ? null : t.ticket_id)}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} aria-hidden="true" />
-                          <span className="text-[10px] font-mono text-slate-400">#{t.ticket_id.slice(0, 8).toUpperCase()}</span>
-                          {t.category && (
-                            <>
-                              <span className="text-slate-200 text-xs">·</span>
-                              <span className="text-[11px] font-semibold text-slate-500">{CATEGORY_LABEL[t.category] ?? t.category}</span>
-                            </>
-                          )}
-                          {t.admin_note && (
-                            <span className="text-[10px] font-semibold bg-indigo-50 text-indigo-500 border border-indigo-100 rounded-full px-1.5 py-0.5">note</span>
-                          )}
-                        </div>
-                        <p className="text-sm text-slate-700 truncate pr-4">
-                          {t.resolution?.slice(0, 90) ?? t.escalation_reason ?? '—'}
-                        </p>
-                        <p className="text-xs text-slate-400 mt-1">{relativeTime(t.created_at)}</p>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0 pt-0.5">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold border capitalize ${cfg.badge}`}>
-                          {t.status}
-                        </span>
-                        <svg
-                          className={`w-4 h-4 text-slate-300 group-hover:text-slate-500 transition-all duration-150 ${expandedTicket === t.ticket_id ? 'rotate-180 text-slate-500' : ''}`}
-                          viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
-                        >
-                          <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    </div>
-
-                    {expandedTicket === t.ticket_id && (
-                      <ResolvePanel
-                        ticket={t}
-                        token={token}
-                        onToast={onToast}
-                        onDone={updated => {
-                          handleTicketUpdated(updated as TicketRow)
-                          setExpandedTicket(null)
-                        }}
-                      />
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Pagination */}
-          {ticketTotal > LIMIT && (
-            <div className="px-5 py-3.5 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                {ticketOffset + 1}–{Math.min(ticketOffset + LIMIT, ticketTotal)} of {ticketTotal}
-              </span>
-              <div className="flex gap-2">
-                <button
-                  disabled={ticketOffset === 0}
-                  onClick={() => loadTickets(Math.max(0, ticketOffset - LIMIT), statusFilter)}
-                  className="text-xs font-semibold text-slate-600 border border-slate-200 rounded-xl px-3.5 py-1.5 hover:bg-slate-50 disabled:opacity-40 transition-all"
-                >
-                  ← Previous
-                </button>
-                <button
-                  disabled={ticketOffset + LIMIT >= ticketTotal}
-                  onClick={() => loadTickets(ticketOffset + LIMIT, statusFilter)}
-                  className="text-xs font-semibold text-slate-600 border border-slate-200 rounded-xl px-3.5 py-1.5 hover:bg-slate-50 disabled:opacity-40 transition-all"
-                >
-                  Next →
-                </button>
-              </div>
-            </div>
-          )}
+      {s && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Kpi label="Needs review" value={String(s.escalated)} icon={I.shield}
+            tone={s.escalated > 0 ? 'rose' : 'emerald'} sub={s.escalated > 0 ? 'Waiting for your team' : 'All clear'}
+            onClick={() => setTab('review')} />
+          <Kpi label="Resolved automatically" value={autoRate} icon={I.bolt} tone="emerald"
+            sub={s.total > 0 ? `${s.auto_resolved} of ${s.total} with no human effort` : 'No tickets yet'} />
+          <Kpi label="Waiting on employees" value={String(s.awaiting_confirmation)} icon={I.clock} tone={s.awaiting_confirmation > 0 ? 'amber' : 'slate'}
+            sub="Need the employee’s confirmation" />
+          <Kpi label="Total tickets" value={String(s.total)} icon={I.ticket} tone="indigo"
+            sub={s.failed > 0 ? `${s.failed} failed — check All tickets` : `${s.human_resolved} resolved by your team`}
+            onClick={() => setTab('tickets')} />
         </div>
       )}
+
+      <div>
+        <div className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Admin sections">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={tab === t.key}
+              onClick={() => setTab(t.key)}
+              className={`-mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-semibold transition-colors ${
+                tab === t.key ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {t.label}
+              {t.count !== undefined && (
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                  t.urgent ? 'bg-rose-100 text-rose-700' : tab === t.key ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'
+                }`}>{t.count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'review' && <ReviewQueue tickets={queue} loading={queueLoading} token={token} onToast={onToast} onChanged={refreshAll} />}
+        {tab === 'tickets' && <AllTickets token={token} stats={stats} version={ticketsVersion} onToast={onToast} onChanged={refreshAll} />}
+        {tab === 'kb' && <KnowledgeBasePanel token={token} onToast={onToast} onCountChange={setKbCount} />}
+        {tab === 'people' && (
+          <div className="space-y-5">
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-labelledby="members-h">
+              <div className="border-b border-slate-100 px-5 py-3.5">
+                <h3 id="members-h" className="text-sm font-bold text-slate-900">Members <span className="font-normal text-slate-400">({members.length})</span></h3>
+              </div>
+              <ul className="divide-y divide-slate-100">
+                {members.map((m) => (
+                  <MemberRow key={m.id} m={m} isSelf={m.id === currentUserId} token={token} onToast={onToast} onChanged={loadPeople} />
+                ))}
+              </ul>
+            </section>
+            <InvitesPanel token={token} invites={invites} onInvitesChange={setInvites} onToast={onToast} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

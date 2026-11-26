@@ -1,0 +1,23 @@
+Northwind Labs — Remote Work and Equipment Policy
+
+Version 2.1 · Owner: Workplace Team · Applies to all employees
+
+Hybrid working
+
+Employees may work remotely up to 3 days per week. Tuesdays and Thursdays are anchor days on which everyone in your team is expected in the office. Fully remote arrangements need written approval from your department head.
+
+Home office allowance
+
+New starters receive a one-time home office allowance of 600 USD for a desk, chair or monitor, plus 40 USD per month toward internet costs. Claim it in Expensify under the category Home Office within 60 days of purchase, attaching the receipt.
+
+Company equipment
+
+Every employee receives a company laptop, which is replaced every 3 years. Laptops must stay encrypted and be locked whenever unattended. Report a lost or stolen laptop to IT Security within 24 hours.
+
+Connecting to GlobalConnect VPN
+
+Use GlobalConnect VPN whenever you access internal systems from outside the office. If the VPN will not connect, first check your internet connection, then quit and restart the GlobalConnect app, and make sure your Authy MFA code has not expired. If it still fails, submit a NeuraDesk ticket with the exact error message.
+
+Working abroad
+
+You may work from another country for up to 20 working days per year. Submit a Work Abroad request in PeopleHub at least 4 weeks before travelling so the People Team can check tax and immigration rules.

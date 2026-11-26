@@ -58,14 +58,17 @@ docker-compose --profile frontend up frontend   # → localhost:3000
 
 ### Option B — Local, no Docker (SQLite fallback)
 
+Set `DATABASE_URL=sqlite:///./neuradesk_local.db` in `.env` first (the
+`.env.example` default points at Postgres in Docker, which this option doesn't use).
+
 ```bash
 # Terminal 1 — enterprise mock API (destructive-op stubs + audit log)
-ENTERPRISE_API_SECRET=local-dev-secret-123 \
-  uvicorn services.enterprise_api:app --port 8001
+source .venv/bin/activate
+uvicorn services.enterprise_api:app --port 8001
 
 # Terminal 2 — main backend (migrate first; safe to run every time)
-python -m scripts.migrate_db
-uvicorn api.main:app --reload --port 8000
+source .venv/bin/activate
+python -m scripts.migrate_db && uvicorn api.main:app --reload --port 8000
 
 # Terminal 3 — frontend (Vite dev server, proxies /api, /auth, /ws … to :8000)
 cd frontend && npm install && npm run dev
@@ -145,7 +148,7 @@ if all pass:
 ## 5. Testing
 
 ```bash
-pytest tests/ -v                      # full unit + integration suite (234 tests)
+pytest tests/ -v                      # full unit + integration suite (250 tests)
 pytest tests/test_action_node.py -v   # one file
 pytest tests/ -k "confirm or otp"     # by keyword
 ```

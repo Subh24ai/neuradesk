@@ -5,6 +5,7 @@ import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape as _esc
 
 import structlog
 
@@ -102,6 +103,7 @@ def send_escalation_alert(
         log.warning("escalation.no_support_email", ticket_id=ticket_id)
         return
     short_id = ticket_id[:8]
+    h_reason, h_org, h_group, h_pri = _esc(reason), _esc(org_name), _esc(assignee_group), _esc(priority)
     text = (
         f"NeuraDesk — Escalated Ticket [{short_id}]\n\n"
         f"Organisation: {org_name}\n"
@@ -118,19 +120,19 @@ def send_escalation_alert(
       <p style="margin:0 0 20px;color:#64748b;font-size:14px;">Escalated ticket — action required</p>
       <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
         <p style="margin:0 0 8px;color:#92400e;font-size:14px;font-weight:600;">Ticket #{short_id} needs human review</p>
-        <p style="margin:0;color:#92400e;font-size:13px;">{reason}</p>
+        <p style="margin:0;color:#92400e;font-size:13px;">{h_reason}</p>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px;color:#475569;">
-        <tr><td style="padding:4px 0;font-weight:600;">Organisation</td><td>{org_name}</td></tr>
-        <tr><td style="padding:4px 0;font-weight:600;">Assigned to</td><td>{assignee_group}</td></tr>
-        <tr><td style="padding:4px 0;font-weight:600;">Priority</td><td>{priority}</td></tr>
+        <tr><td style="padding:4px 0;font-weight:600;">Organisation</td><td>{h_org}</td></tr>
+        <tr><td style="padding:4px 0;font-weight:600;">Assigned to</td><td>{h_group}</td></tr>
+        <tr><td style="padding:4px 0;font-weight:600;">Priority</td><td>{h_pri}</td></tr>
       </table>
       <p style="margin-top:20px;color:#94a3b8;font-size:12px;">
         Log in to the NeuraDesk admin dashboard to view full details and resolve this ticket.
       </p>
     </div>
     """
-    _send(support_email, f"[{priority}] Escalated ticket requires attention — {org_name}", text, html)
+    _send(support_email, f"[{priority}] Escalated ticket requires attention — {org_name}".replace("\n", " "), text, html)
 
 
 def send_ticket_notification(
@@ -148,7 +150,7 @@ def send_ticket_notification(
         detail_text = f"Resolution:\n{resolution}" if resolution else "Your request was handled automatically."
         detail_html = (
             f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:16px 20px;margin:16px 0;">'
-            f'<p style="margin:0;color:#166534;font-size:14px;">{resolution or "Your request was handled automatically."}</p>'
+            f'<p style="margin:0;color:#166534;font-size:14px;">{_esc(resolution or "Your request was handled automatically.")}</p>'
             f'</div>'
         )
         accent = "#16a34a"
@@ -165,9 +167,9 @@ def send_ticket_notification(
         )
         detail_html = (
             f'<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px 20px;margin:16px 0;">'
-            f'<p style="margin:0 0 8px;color:#92400e;font-size:14px;">{escalation_body}</p>'
+            f'<p style="margin:0 0 8px;color:#92400e;font-size:14px;">{_esc(escalation_body)}</p>'
             f'<p style="margin:0;color:#b45309;font-size:13px;">'
-            f'Assigned to: <strong>{group_label}</strong> &nbsp;·&nbsp; '
+            f'Assigned to: <strong>{_esc(group_label)}</strong> &nbsp;·&nbsp; '
             f'Expected response: <strong>{response_time}</strong>'
             f'</p>'
             f'</div>'

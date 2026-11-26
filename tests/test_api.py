@@ -221,6 +221,69 @@ class TestTickets:
         assert r.status_code == 200
         assert r.json()["total"] == 1
 
+    def test_list_tickets_filters_by_status(self, auth_client, db_engine) -> None:
+        """?status= returns only matching tickets, with a matching total."""
+        from sqlalchemy.orm import sessionmaker
+
+        from api.models import TicketModel
+
+        ids = [auth_client.post("/tickets", json={"text": f"ticket {i}"}).json()["ticket_id"] for i in range(3)]
+        db = sessionmaker(bind=db_engine)()
+        db.get(TicketModel, ids[0]).status = "awaiting_confirmation"
+        db.commit()
+        db.close()
+
+        r = auth_client.get("/tickets/", params={"status": "awaiting_confirmation"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert [t["ticket_id"] for t in body["tickets"]] == [ids[0]]
+        assert auth_client.get("/tickets/").json()["total"] == 3
+
+    def _seed(self, auth_client, db_engine, items: list[tuple[str, str]]) -> list[str]:
+        """Create tickets with given (text, status) via the API, then set their status."""
+        from sqlalchemy.orm import sessionmaker
+
+        from api.models import TicketModel
+
+        ids = [auth_client.post("/tickets", json={"text": text}).json()["ticket_id"] for text, _ in items]
+        db = sessionmaker(bind=db_engine)()
+        for tid, (_, st) in zip(ids, items, strict=True):
+            db.get(TicketModel, tid).status = st
+        db.commit()
+        db.close()
+        return ids
+
+    def test_list_tickets_multi_status_filter(self, auth_client, db_engine) -> None:
+        """?status=a,b returns tickets in either status."""
+        self._seed(auth_client, db_engine, [("one", "pending"), ("two", "processing"), ("three", "resolved")])
+        r = auth_client.get("/tickets/", params={"status": "pending,processing"})
+        assert r.json()["total"] == 2
+
+    def test_list_tickets_search(self, auth_client, db_engine) -> None:
+        """?q= searches the request text case-insensitively and treats % literally."""
+        self._seed(auth_client, db_engine, [
+            ("VPN keeps dropping", "resolved"), ("Need Jira access", "resolved"), ("Disk is 100% full", "escalated"),
+        ])
+        assert auth_client.get("/tickets/", params={"q": "vpn"}).json()["total"] == 1
+        assert auth_client.get("/tickets/", params={"q": "100%"}).json()["total"] == 1
+        assert auth_client.get("/tickets/", params={"q": "%"}).json()["total"] == 1  # literal, not wildcard
+        assert auth_client.get("/tickets/", params={"q": "nothing-matches"}).json()["total"] == 0
+
+    def test_ticket_summary_counts_all_tickets(self, auth_client, db_engine) -> None:
+        """/tickets/summary counts every ticket by status (not just one page)."""
+        self._seed(auth_client, db_engine, [("a", "resolved"), ("b", "resolved"), ("c", "awaiting_confirmation")])
+        r = auth_client.get("/tickets/summary")
+        assert r.status_code == 200
+        assert r.json() == {"total": 3, "by_status": {"resolved": 2, "awaiting_confirmation": 1}}
+
+    def test_ticket_summary_is_per_user(self, auth_client, test_client) -> None:
+        """Another user's summary never includes my tickets."""
+        auth_client.post("/tickets", json={"text": "mine"})
+        other = _register_and_verify(test_client, "other.sum@acme.ai", "password123", "Other Org")
+        r = test_client.get("/tickets/summary", headers={"Authorization": f"Bearer {other}"})
+        assert r.json() == {"total": 0, "by_status": {}}
+
     def test_get_ticket_success(
         self, auth_client, sample_ticket_payload
     ) -> None:
@@ -851,3 +914,135 @@ class TestHealth:
         r = test_client.get("/health")
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
+
+
+def test_response_datetimes_are_explicit_utc() -> None:
+    """Naive DB datetimes (SQLite) are serialised with a UTC offset, never as bare local time."""
+    from datetime import datetime
+
+    from api.models import TicketResponse
+
+    body = TicketResponse(ticket_id="t", status="resolved", created_at=datetime(2026, 11, 24, 12, 0)).model_dump_json()
+    assert '"created_at":"2026-11-24T12:00:00Z"' in body
+
+
+class TestAdminDashboardApi:
+    """Admin stats breakdown and ticket search used by the Overview dashboard."""
+
+    def _seed(self, auth_client, db_engine, rows):
+        """rows: (text, status, resolved_by_admin)."""
+        from sqlalchemy.orm import sessionmaker
+
+        from api.models import TicketModel, UserModel
+
+        ids = [auth_client.post("/tickets", json={"text": t}).json()["ticket_id"] for t, _, _ in rows]
+        db = sessionmaker(bind=db_engine)()
+        admin = db.query(UserModel).filter(UserModel.email == "auth-fixture@neuradesk.ai").first()
+        for tid, (_, st, by_admin) in zip(ids, rows, strict=True):
+            t = db.get(TicketModel, tid)
+            t.status = st
+            t.resolved_by = admin.id if by_admin else None
+        db.commit()
+        db.close()
+
+    def test_stats_split_auto_vs_human_resolved(self, auth_client, db_engine) -> None:
+        """auto_resolved excludes tickets an admin resolved by hand."""
+        self._seed(auth_client, db_engine, [
+            ("a", "resolved", False), ("b", "resolved", False), ("c", "resolved", True), ("d", "escalated", False),
+        ])
+        s = auth_client.get("/admin/stats").json()
+        assert (s["total"], s["resolved"], s["auto_resolved"], s["human_resolved"], s["escalated"]) == (4, 3, 2, 1, 1)
+
+    def test_admin_ticket_search_and_multi_status(self, auth_client, db_engine) -> None:
+        """q matches request text and the employee's email; status accepts a list."""
+        self._seed(auth_client, db_engine, [
+            ("Printer jammed on floor 2", "escalated", False), ("VPN drops", "resolved", False), ("Leave question", "awaiting_confirmation", False),
+        ])
+        assert auth_client.get("/admin/tickets", params={"q": "printer"}).json()["total"] == 1
+        assert auth_client.get("/admin/tickets", params={"q": "auth-fixture@"}).json()["total"] == 3
+        assert auth_client.get("/admin/tickets", params={"status": "escalated,awaiting_confirmation"}).json()["total"] == 2
+
+
+def test_admin_reply_replaces_ai_draft_on_resolve(auth_client, db_engine) -> None:
+    """Resolving an escalated ticket shows the admin's reply, never the agents' untrusted draft."""
+    from sqlalchemy.orm import sessionmaker
+
+    from api.models import TicketModel
+
+    tid = auth_client.post("/tickets", json={"text": "Reset the password for ceo@corp.com"}).json()["ticket_id"]
+    db = sessionmaker(bind=db_engine)()
+    t = db.get(TicketModel, tid)
+    t.status, t.resolution = "escalated", "AI draft: go to the portal and reset it."
+    db.commit()
+    db.close()
+
+    r = auth_client.patch(f"/admin/tickets/{tid}", json={"status": "resolved", "admin_note": "Only the account owner can request this."})
+    assert r.status_code == 200
+    assert r.json()["resolution"] == "Only the account owner can request this."
+
+
+class TestSessionSecurity:
+    """Session lifecycle: revocation can't be bypassed, refresh replaces, password change signs out others."""
+
+    def _login(self, client, ua: str = "TestBrowser/1.0") -> str:
+        r = client.post("/auth/login", json={"email": "auth-fixture@neuradesk.ai", "password": "testpassword99"},
+                        headers={"User-Agent": ua})
+        assert r.status_code == 200
+        return r.json()["access_token"]
+
+    def test_revoked_token_cannot_be_refreshed(self, auth_client, test_client) -> None:
+        """Regression: a signed-out token used to be exchangeable for a new valid one."""
+        tok = self._login(test_client)
+        H = {"Authorization": f"Bearer {tok}"}
+        assert test_client.post("/auth/logout", headers=H).status_code == 200
+        r = test_client.post("/auth/refresh", headers=H)
+        assert r.status_code == 401
+        assert r.json()["detail"]["code"] == "TOKEN_REVOKED"
+
+    def test_refresh_replaces_the_session(self, auth_client, test_client) -> None:
+        """After a refresh the old token stops working and the device has one session, not two."""
+        tok = self._login(test_client)
+        new = test_client.post("/auth/refresh", headers={"Authorization": f"Bearer {tok}"}).json()["access_token"]
+        assert test_client.get("/auth/me", headers={"Authorization": f"Bearer {tok}"}).status_code == 401
+        sessions = test_client.get("/auth/sessions", headers={"Authorization": f"Bearer {new}"}).json()["sessions"]
+        assert tok not in [s["jti"] for s in sessions]
+
+    def test_sessions_record_device(self, auth_client, test_client) -> None:
+        """The session list shows which browser signed in."""
+        tok = self._login(test_client, ua="Mozilla/5.0 (Macintosh) Chrome/131.0")
+        sessions = test_client.get("/auth/sessions", headers={"Authorization": f"Bearer {tok}"}).json()["sessions"]
+        current = next(s for s in sessions if s["is_current"])
+        assert "Chrome" in current["user_agent"]
+
+    def test_password_change_signs_out_other_devices(self, auth_client, test_client) -> None:
+        """Changing the password revokes every other session; this device gets a fresh token."""
+        laptop = self._login(test_client, ua="Laptop")
+        phone = self._login(test_client, ua="Phone")
+        r = test_client.post("/auth/change-password", json={"current_password": "testpassword99", "new_password": "brandNewPass42"},
+                             headers={"Authorization": f"Bearer {laptop}"})
+        assert r.status_code == 200
+        assert r.json()["other_sessions_signed_out"] >= 1
+        assert test_client.get("/auth/me", headers={"Authorization": f"Bearer {phone}"}).status_code == 401
+        assert test_client.get("/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).status_code == 200
+
+    def test_new_password_must_differ(self, auth_client) -> None:
+        """Re-using the current password is rejected."""
+        r = auth_client.post("/auth/change-password", json={"current_password": "testpassword99", "new_password": "testpassword99"})
+        assert r.status_code == 400
+        assert r.json()["detail"]["code"] == "PASSWORD_UNCHANGED"
+
+    def test_sign_out_all_other_sessions(self, auth_client, test_client) -> None:
+        """DELETE /auth/sessions keeps the caller signed in and signs everything else out."""
+        a = self._login(test_client, ua="A")
+        b = self._login(test_client, ua="B")
+        r = test_client.delete("/auth/sessions", headers={"Authorization": f"Bearer {a}"})
+        assert r.status_code == 200 and r.json()["signed_out"] >= 1
+        assert test_client.get("/auth/me", headers={"Authorization": f"Bearer {b}"}).status_code == 401
+        assert test_client.get("/auth/me", headers={"Authorization": f"Bearer {a}"}).status_code == 200
+
+    def test_update_name(self, auth_client) -> None:
+        """PATCH /auth/me updates the name; blank names are rejected."""
+        r = auth_client.patch("/auth/me", json={"first_name": " Ada ", "last_name": "Lovelace"})
+        assert r.status_code == 200 and r.json()["first_name"] == "Ada"
+        assert auth_client.get("/auth/me").json()["last_name"] == "Lovelace"
+        assert auth_client.patch("/auth/me", json={"first_name": "", "last_name": "X"}).status_code == 422

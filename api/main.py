@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import structlog
 from dotenv import load_dotenv
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from sqlalchemy import func, or_
 from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
@@ -48,6 +50,7 @@ from api.models import (
     TicketListResponse,
     TicketModel,
     TicketResponse,
+    TokenBlocklistModel,
     UserModel,
     engine,
     get_db,
@@ -78,7 +81,7 @@ limiter = Limiter(key_func=get_remote_address, enabled=_RATELIMIT_ENABLED)
 
 # Fields forwarded to the client in per-node WebSocket events.
 _STREAM_FIELDS = frozenset(
-    ("category", "confidence", "resolution", "status", "escalation_reason")
+    ("category", "confidence", "resolution", "status", "escalation_reason", "action_taken")
 )
 
 # Maximum seconds the LangGraph execution may run before the WebSocket is aborted.
@@ -285,7 +288,9 @@ def health_deep() -> dict:
         db.close()
         checks["db"] = "ok"
     except Exception as exc:
-        checks["db"] = f"error: {exc}"
+        # Details go to the logs only — this endpoint is public.
+        log.error("health.db_failed", exc_type=type(exc).__name__, error=str(exc))
+        checks["db"] = "error"
 
     # RAG index check
     try:
@@ -293,7 +298,8 @@ def health_deep() -> dict:
         HybridRetriever.get()
         checks["rag"] = "ok"
     except Exception as exc:
-        checks["rag"] = f"error: {exc}"
+        log.error("health.rag_failed", exc_type=type(exc).__name__, error=str(exc))
+        checks["rag"] = "error"
 
     # LLM provider config check — cheap (verifies a key is present, no round-trip),
     # so the UI "agents online" badge reflects real reachability, not just liveness.
@@ -306,7 +312,7 @@ def health_deep() -> dict:
     if _key_var and os.getenv(_key_var):
         checks["llm"] = "ok"
     else:
-        checks["llm"] = f"error: {_key_var or 'LLM_PROVIDER'} not configured"
+        checks["llm"] = "error: not configured"
 
     all_ok = all(v == "ok" for v in checks.values())
     if not all_ok:
@@ -342,19 +348,43 @@ def _orm_to_response(ticket: TicketModel) -> TicketResponse:
     "/tickets/",
     response_model=TicketListResponse,
     tags=["tickets"],
-    summary="List last 20 tickets for the authenticated user",
+    summary="List the authenticated user's tickets (optionally filtered by status)",
 )
 def list_tickets(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    status_filter: str | None = Query(
+        None, alias="status", max_length=120,
+        description="Comma-separated statuses to include, e.g. 'pending,processing'",
+    ),
+    q: str | None = Query(
+        None, max_length=200,
+        description="Case-insensitive search over the request text, resolution and category",
+    ),
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketListResponse:
-    """Return tickets belonging to the caller, newest first, with pagination."""
+    """Return the caller's tickets, newest first, with pagination.
+
+    Filtering and search run in the database so ``total`` and pagination stay
+    correct across the user's whole history, not just the current page.
+    """
     try:
-        q = db.query(TicketModel).filter(TicketModel.user_id == current_user.id)
-        total = q.count()
-        rows = q.order_by(TicketModel.created_at.desc()).offset(offset).limit(limit).all()
+        query = db.query(TicketModel).filter(TicketModel.user_id == current_user.id)
+        statuses = [s.strip() for s in (status_filter or "").split(",") if s.strip()]
+        if statuses:
+            query = query.filter(TicketModel.status.in_(statuses))
+        term = (q or "").strip()
+        if term:
+            # Escape LIKE wildcards so a search for "100%" matches literally.
+            like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            query = query.filter(or_(
+                TicketModel.raw_text.ilike(like, escape="\\"),
+                TicketModel.resolution.ilike(like, escape="\\"),
+                TicketModel.category.ilike(like, escape="\\"),
+            ))
+        total = query.count()
+        rows = query.order_by(TicketModel.created_at.desc()).offset(offset).limit(limit).all()
         return TicketListResponse(tickets=[_orm_to_response(r) for r in rows], total=total, limit=limit, offset=offset)
     except Exception as exc:
         log.exception("tickets.list.error", user_id=current_user.id)
@@ -362,6 +392,26 @@ def list_tickets(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Request could not be processed.", "code": "TICKET_LIST_FAILED"},
         ) from exc
+
+
+@app.get(
+    "/tickets/summary",
+    tags=["tickets"],
+    summary="Ticket counts by status for the authenticated user",
+)
+def ticket_summary(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return ``{"total": n, "by_status": {status: count}}`` over all of the caller's tickets."""
+    rows = (
+        db.query(TicketModel.status, func.count(TicketModel.id))
+        .filter(TicketModel.user_id == current_user.id)
+        .group_by(TicketModel.status)
+        .all()
+    )
+    by_status = {st: n for st, n in rows}
+    return {"total": sum(by_status.values()), "by_status": by_status}
 
 
 @app.post(
@@ -833,6 +883,9 @@ async def websocket_ticket(
         try:
             jwt_payload = _decode_token(token)
             caller_id: str = jwt_payload.get("sub", "")
+            jti = jwt_payload.get("jti")
+            if jti and db.get(TokenBlocklistModel, jti):
+                raise PermissionError("token revoked")
         except Exception:
             await websocket.send_json({"error": "Unauthorized", "code": "WS_UNAUTHORIZED"})
             await websocket.close(1008)
@@ -848,7 +901,7 @@ async def websocket_ticket(
         # Lose it (the background worker or an earlier connection is already on it,
         # or it is already done) → observe the outcome from the DB. Either way the
         # ticket is guaranteed to be processed exactly once.
-        async def _send_node(node_name: str, node_output: dict) -> None:
+        async def _send_node(node_name: str, node_output: dict[str, Any]) -> None:
             with suppress(Exception):
                 await websocket.send_json({
                     "node": node_name,

@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
+/** Shown for 5xx responses so a server fault never reads like a wrong password. */
+const SERVER_FAULT = 'NeuraDesk is having trouble on our side — your details are fine. Please try again in a minute.'
+
 interface Props {
   onLogin: (token: string) => void
+  /** Why the user was signed out, shown once on the sign-in screen. */
+  notice?: string | null
 }
 
 type Tab = 'login' | 'register'
@@ -129,7 +134,7 @@ function BrandPanel() {
       <div className="relative z-10 mt-auto pt-7 border-t border-white/10 grid grid-cols-3 gap-4">
         {[
           { val: '4', label: 'AI Agents' },
-          { val: '~4s', label: 'Avg resolve' },
+          { val: 'Secs', label: 'To resolve' },
           { val: 'MIT', label: 'Open Source' },
         ].map(({ val, label }) => (
           <div key={label} className="text-center">
@@ -142,7 +147,7 @@ function BrandPanel() {
   )
 }
 
-export default function LoginForm({ onLogin }: Props) {
+export default function LoginForm({ onLogin, notice = null }: Props) {
   const [tab, setTab] = useState<Tab>('login')
   const [step, setStep] = useState<Step>('credentials')
   const [email, setEmail] = useState('')
@@ -157,7 +162,7 @@ export default function LoginForm({ onLogin }: Props) {
   const [orgCreationToken, setOrgCreationToken] = useState('')
   const [orgCreationRestricted, setOrgCreationRestricted] = useState(false)
   const [workEmailRequired, setWorkEmailRequired] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(notice)
   const [success, setSuccess] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -210,14 +215,11 @@ export default function LoginForm({ onLogin }: Props) {
         setTimeout(() => otpRefs.current[0]?.focus(), 50)
         return
       }
-      if (tab === 'register') {
-        switchTab('login')
-        setSuccess('Account verified! Please sign in.')
-        return
-      }
+      // Verified — the server has already issued a session, so sign the user
+      // straight in (asking them to log in again just wastes the token).
       onLogin(data.access_token!)
     } catch {
-      setError('Network error — is the backend running on port 8000?')
+      setError('Can’t reach NeuraDesk — check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -287,7 +289,7 @@ export default function LoginForm({ onLogin }: Props) {
       setStep('reset-otp')
       setTimeout(() => otpRefs.current[0]?.focus(), 50)
     } catch {
-      setError('Network error — is the backend running on port 8000?')
+      setError('Can’t reach NeuraDesk — check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -314,7 +316,7 @@ export default function LoginForm({ onLogin }: Props) {
       }
       onLogin(data.access_token!)
     } catch {
-      setError('Network error — is the backend running on port 8000?')
+      setError('Can’t reach NeuraDesk — check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -360,7 +362,9 @@ export default function LoginForm({ onLogin }: Props) {
             setTimeout(() => otpRefs.current[0]?.focus(), 50)
             return
           }
-          setError(typeof detail === 'string' ? detail : (detail?.error ?? 'Authentication failed'))
+          setError(res.status >= 500
+            ? (typeof detail === 'object' && detail?.error) || SERVER_FAULT
+            : typeof detail === 'string' ? detail : (detail?.error ?? 'Incorrect email or password'))
           return
         }
         onLogin(data.access_token!)
@@ -376,7 +380,8 @@ export default function LoginForm({ onLogin }: Props) {
         const data = await res.json() as { message?: string; dev_otp?: string; detail?: { error?: string } | string }
         if (!res.ok) {
           const detail = data.detail
-          setError(typeof detail === 'string' ? detail : (detail?.error ?? 'Registration failed'))
+          setError(res.status >= 500 ? SERVER_FAULT
+            : typeof detail === 'string' ? detail : (detail?.error ?? 'Registration failed'))
           return
         }
         setPendingEmail(email)
@@ -387,7 +392,7 @@ export default function LoginForm({ onLogin }: Props) {
         setTimeout(() => otpRefs.current[0]?.focus(), 50)
       }
     } catch {
-      setError('Network error — is the backend running on port 8000?')
+      setError('Can’t reach NeuraDesk — check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -779,7 +784,7 @@ export default function LoginForm({ onLogin }: Props) {
                   placeholder="Paste your invite code"
                   className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow font-mono bg-slate-50/50 focus:bg-white"
                 />
-                <p className="text-xs text-slate-400 mt-2">Ask your admin for the invite code from Settings → Organisation.</p>
+                <p className="text-xs text-slate-400 mt-2">Ask your admin for an invite code — they create one under Admin → People.</p>
               </>
             )}
           </div>

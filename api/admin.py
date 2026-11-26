@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from api.auth import _decode_token, get_current_user
@@ -113,7 +113,14 @@ def _orm_to_response(ticket: TicketModel, db: Session | None = None) -> TicketRe
 def list_org_tickets(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    status_filter: str | None = Query(None, alias="status"),
+    status_filter: str | None = Query(
+        None, alias="status", max_length=120,
+        description="Comma-separated statuses to include",
+    ),
+    search: str | None = Query(
+        None, alias="q", max_length=200,
+        description="Search request text, resolution, category, or the employee's email",
+    ),
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketListResponse:
@@ -123,8 +130,21 @@ def list_org_tickets(
         raise HTTPException(status_code=404, detail={"code": "NO_ORG"})
 
     q = db.query(TicketModel).filter(TicketModel.org_id == current_user.org_id)
-    if status_filter:
-        q = q.filter(TicketModel.status == status_filter)
+    statuses = [x.strip() for x in (status_filter or "").split(",") if x.strip()]
+    if statuses:
+        q = q.filter(TicketModel.status.in_(statuses))
+    term = (search or "").strip()
+    if term:
+        like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        matching_users = db.query(UserModel.id).filter(
+            UserModel.org_id == current_user.org_id, UserModel.email.ilike(like, escape="\\")
+        )
+        q = q.filter(or_(
+            TicketModel.raw_text.ilike(like, escape="\\"),
+            TicketModel.resolution.ilike(like, escape="\\"),
+            TicketModel.category.ilike(like, escape="\\"),
+            TicketModel.user_id.in_(matching_users),
+        ))
 
     total = q.count()
     rows = q.order_by(TicketModel.created_at.desc()).offset(offset).limit(limit).all()
@@ -154,9 +174,18 @@ def org_stats(
         )
 
     total = db.query(TicketModel).filter(TicketModel.org_id == current_user.org_id).count()
+    resolved_q = db.query(TicketModel).filter(
+        TicketModel.org_id == current_user.org_id, TicketModel.status == "resolved"
+    )
+    human_resolved = resolved_q.filter(TicketModel.resolved_by.isnot(None)).count()
+    resolved = resolved_q.count()
     return {
         "total": total,
-        "resolved": _count("resolved"),
+        "resolved": resolved,
+        # Resolved by the agents with no admin involvement vs. by an admin.
+        "auto_resolved": resolved - human_resolved,
+        "human_resolved": human_resolved,
+        "processing": _count("processing"),
         "escalated": _count("escalated"),
         "pending": _count("pending"),
         "failed": _count("failed"),
@@ -190,7 +219,10 @@ def resolve_ticket(
     ticket.status = req.status
     if req.admin_note:
         ticket.admin_note = req.admin_note
-        if req.status == "resolved" and not ticket.resolution:
+        if req.status == "resolved":
+            # The admin's reply is the final word. An escalated ticket may carry
+            # the agents' draft answer (which the system chose not to trust) —
+            # it must never outrank what a human decided.
             ticket.resolution = req.admin_note
     ticket.resolved_by = current_user.id
     ticket.updated_at = datetime.now(UTC)

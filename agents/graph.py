@@ -66,9 +66,11 @@ def get_checkpointer() -> Any | None:
 
         return AsyncPostgresSaver.from_conn_string(db_url)
     except ImportError:
-        log.warning(
-            "graph.checkpointer_unavailable",
-            hint="pip install langgraph-checkpoint-postgres psycopg[binary] for crash recovery",
+        # Optional extra, not an error: unfinished tickets are already recovered
+        # from the database by the background worker after a restart.
+        log.info(
+            "graph.checkpointer_disabled",
+            note="optional — install langgraph-checkpoint-postgres psycopg[binary] to enable",
         )
         return None
     except Exception as exc:

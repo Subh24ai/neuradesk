@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import true as sa_true
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 load_dotenv()
@@ -92,6 +93,9 @@ class UserModel(Base):
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # False once an admin deactivates the account (offboarding). Kept instead of
+    # deleting so the user's ticket history and audit trail stay intact.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     otp: Mapped[str | None] = mapped_column(String(6), nullable=True)
     otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Failed OTP verification attempts for the current code — locks after a cap
@@ -221,6 +225,10 @@ class UserSessionModel(Base):
         default=lambda: datetime.now(UTC),
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Where the session was signed in from — shown so users can recognise and
+    # revoke devices. Display-only; never used for authorization.
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class TicketCommentModel(Base):
@@ -276,7 +284,34 @@ def get_db() -> Generator[Session, None, None]:
 
 # ── Auth schemas ──────────────────────────────────────────────────────────────
 
-class RegisterRequest(BaseModel):
+class UTCResponse(BaseModel):
+    """Base for response schemas: every datetime is sent as explicit UTC.
+
+    SQLite returns timezone-naive datetimes even for ``DateTime(timezone=True)``
+    columns, which serialised as e.g. ``2026-11-24T12:00:00`` with no offset.
+    Browsers read that as *local* time, so tickets appeared hours old outside UTC.
+    """
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _assume_utc(cls, value: Any) -> Any:
+        """Mark naive datetimes as UTC (the app only ever stores UTC)."""
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
+class EmailRequest(BaseModel):
+    """Base for auth requests: emails are case-insensitive, so store/compare lowercase."""
+
+    @field_validator("email", mode="after", check_fields=False)
+    @classmethod
+    def _normalise_email(cls, value: str) -> str:
+        """Lower-case and trim so 'Ada@Corp.com' and 'ada@corp.com' are one account."""
+        return value.strip().lower()
+
+
+class RegisterRequest(EmailRequest):
     """POST /auth/register body."""
 
     email: EmailStr
@@ -288,7 +323,7 @@ class RegisterRequest(BaseModel):
     org_creation_token: str | None = Field(None, description="Platform token required when ORG_CREATION_SECRET is set")
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(EmailRequest):
     """POST /auth/login body."""
 
     email: EmailStr
@@ -302,7 +337,20 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-class UserResponse(BaseModel):
+class PasswordChangedResponse(TokenResponse):
+    """Returned by POST /auth/change-password."""
+
+    other_sessions_signed_out: int = 0
+
+
+class ProfileUpdateRequest(BaseModel):
+    """PATCH /auth/me body."""
+
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+
+
+class UserResponse(UTCResponse):
     """Public user representation (no password hash)."""
 
     id: str
@@ -313,26 +361,26 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class OtpVerifyRequest(BaseModel):
+class OtpVerifyRequest(EmailRequest):
     """POST /auth/verify-otp body."""
 
     email: EmailStr
     otp: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
-class OtpResendRequest(BaseModel):
+class OtpResendRequest(EmailRequest):
     """POST /auth/resend-otp body."""
 
     email: EmailStr
 
 
-class ForgotPasswordRequest(BaseModel):
+class ForgotPasswordRequest(EmailRequest):
     """POST /auth/forgot-password body."""
 
     email: EmailStr
 
 
-class ResetPasswordRequest(BaseModel):
+class ResetPasswordRequest(EmailRequest):
     """POST /auth/reset-password body."""
 
     email: EmailStr
@@ -350,7 +398,7 @@ class OtpSentResponse(BaseModel):
 
 # ── Org schemas ───────────────────────────────────────────────────────────────
 
-class OrgResponse(BaseModel):
+class OrgResponse(UTCResponse):
     """Public org representation returned by /orgs/me."""
 
     id: str
@@ -362,7 +410,7 @@ class OrgResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MemberResponse(BaseModel):
+class MemberResponse(UTCResponse):
     """Single member entry returned by GET /orgs/members."""
 
     id: str
@@ -370,9 +418,17 @@ class MemberResponse(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     role: str
+    is_active: bool = True
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class MemberUpdateRequest(BaseModel):
+    """PATCH /orgs/members/{user_id} body — change role and/or access."""
+
+    role: str | None = Field(None, pattern="^(admin|member)$")
+    is_active: bool | None = None
 
 
 class MembersListResponse(BaseModel):
@@ -398,7 +454,7 @@ class TicketCreateRequest(BaseModel):
     user_id: str | None = Field(None, description="Resolved from JWT — ignored if provided")
 
 
-class TicketResponse(BaseModel):
+class TicketResponse(UTCResponse):
     """Single ticket returned by POST /tickets and GET /tickets/{id}."""
 
     ticket_id: str
@@ -444,7 +500,7 @@ class KnowledgeDocCreate(BaseModel):
     content: str = Field(..., min_length=10)
 
 
-class KnowledgeDocResponse(BaseModel):
+class KnowledgeDocResponse(UTCResponse):
     """Single org KB document."""
 
     id: str
@@ -472,7 +528,7 @@ class CommentCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 
 
-class CommentResponse(BaseModel):
+class CommentResponse(UTCResponse):
     """Single ticket comment."""
 
     id: str
@@ -493,13 +549,15 @@ class CommentListResponse(BaseModel):
 
 # ── Invite schemas ────────────────────────────────────────────────────────────
 
-class SessionResponse(BaseModel):
+class SessionResponse(UTCResponse):
     """Single active session returned by GET /auth/sessions."""
 
     jti: str
     created_at: datetime
     expires_at: datetime
     is_current: bool
+    user_agent: str | None = None
+    ip_address: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -518,7 +576,7 @@ class InviteCreateRequest(BaseModel):
     expires_days: int = Field(7, ge=1, le=365, description="Days until the invite expires")
 
 
-class InviteResponse(BaseModel):
+class InviteResponse(UTCResponse):
     """Single invite returned by the admin invite endpoints."""
 
     id: str

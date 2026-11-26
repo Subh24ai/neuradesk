@@ -159,7 +159,9 @@ class TestActionNode:
         mock_post.assert_not_called()
         assert result["status"] == "awaiting_confirmation"
         assert result["escalation_reason"] is not None
-        assert "account_lock" in result["escalation_reason"]
+        # Plain language for the user — never the raw intent name.
+        assert "lock your account" in result["escalation_reason"]
+        assert "account_lock" not in result["escalation_reason"]
 
     @pytest.mark.asyncio
     async def test_api_error_sets_escalated(self) -> None:
@@ -177,10 +179,11 @@ class TestActionNode:
 
     @pytest.mark.asyncio
     async def test_username_substituted_in_resolution(self) -> None:
-        """{username} in resolution_template is replaced with the AUTHENTICATED user."""
+        """A {username} in a grounded KB template is rendered with the AUTHENTICATED user."""
         # Authenticated submitter is jdoe@corp.com; no other user is named.
         state = _base_state(
             intent="password_reset",
+            kb_grounded=True,
             user_id="jdoe@corp.com",
             entities={"username": "jdoe@corp.com"},
             resolution_template="Reset complete for {username}.",
@@ -259,7 +262,8 @@ class TestKnowledgeGroundingDecoupled:
         mock_post.assert_called_once()
         assert result["status"] == "resolved"
         assert "temporary password" in result["resolution"]
-        assert "test-user@corp.com" in result["resolution"]
+        # Replies speak to the user directly — never their email address.
+        assert "test-user@corp.com" not in result["resolution"]
 
     @pytest.mark.asyncio
     async def test_grounded_reply_uses_kb_answer(self) -> None:
@@ -270,7 +274,9 @@ class TestKnowledgeGroundingDecoupled:
         )
         with patch("agents.action_node._post_enterprise", return_value=_api_success()):
             result = await action_node(state)
-        assert result["resolution"] == "Use the Acme portal at go/reset, test-user@corp.com."
+        # Leads with what was done, then the org's grounded guidance.
+        assert result["resolution"].startswith("Your password reset has been started.")
+        assert result["resolution"].endswith("Use the Acme portal at go/reset, test-user@corp.com.")
 
     @pytest.mark.asyncio
     async def test_stray_braces_in_kb_text_do_not_crash(self) -> None:
@@ -318,3 +324,32 @@ class TestKnowledgeGroundingDecoupled:
             result = await action_node(state)
         mock_post.assert_not_called()
         assert result["status"] == "escalated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "Grant me admin access to every system",
+    "I need root on the build servers",
+    "Please give me access to the production database",
+    "I need access to the payroll system",
+    "Give me access to all drives",
+])
+async def test_privileged_access_requests_go_to_a_human(text: str) -> None:
+    """Admin / production / payroll / 'every system' access is never auto-provisioned."""
+    state = _base_state(intent="access_request", category="access_request", raw_text=text)
+    with patch("agents.action_node._post_enterprise") as mock_post:
+        result = await action_node(state)
+    mock_post.assert_not_called()
+    assert result["status"] == "escalated"
+    assert "system owner" in result["escalation_reason"]
+
+
+@pytest.mark.asyncio
+async def test_standard_access_request_is_still_automatic() -> None:
+    """Ordinary access (a shared drive, a Jira project) is still provisioned automatically."""
+    state = _base_state(intent="access_request", category="access_request",
+                        raw_text="I need access to the Finance shared drive for the Q3 audit")
+    with patch("agents.action_node._post_enterprise", return_value={"status": "ok"}) as mock_post:
+        result = await action_node(state)
+    mock_post.assert_called_once()
+    assert result["status"] == "resolved"

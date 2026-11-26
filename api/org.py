@@ -6,10 +6,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from api.auth import get_current_user
+from api.auth import _revoke_other_sessions, get_current_user
 from api.models import (
     MemberResponse,
     MembersListResponse,
+    MemberUpdateRequest,
     OrganizationModel,
     OrgResponse,
     UserModel,
@@ -116,9 +117,68 @@ def list_members(
         members=[
             MemberResponse(
                 id=m.id, email=m.email, first_name=m.first_name, last_name=m.last_name,
-                role=m.role, created_at=m.created_at,
+                role=m.role, is_active=m.is_active, created_at=m.created_at,
             )
             for m in members
         ],
         total=len(members),
+    )
+
+
+@org_router.patch(
+    "/members/{user_id}",
+    response_model=MemberResponse,
+    summary="Change a member's role or deactivate/reactivate them (admin only)",
+)
+def update_member(
+    user_id: str,
+    req: MemberUpdateRequest,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MemberResponse:
+    """Offboarding and role management for the caller's organisation.
+
+    Guardrails: an admin cannot change their own role or access (avoids locking
+    themselves out), and the organisation always keeps at least one active admin.
+    Deactivating someone revokes every session they hold, immediately.
+    """
+    _require_admin(current_user)
+    member = db.get(UserModel, user_id)
+    if member is None or member.org_id != current_user.org_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Member not found", "code": "MEMBER_NOT_FOUND"},
+        )
+    if member.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "You can't change your own role or access", "code": "CANNOT_MODIFY_SELF"},
+        )
+
+    new_role = req.role if req.role is not None else member.role
+    new_active = req.is_active if req.is_active is not None else member.is_active
+    loses_admin = member.role == "admin" and member.is_active and (new_role != "admin" or not new_active)
+    if loses_admin:
+        other_admins = (
+            db.query(UserModel)
+            .filter(UserModel.org_id == current_user.org_id, UserModel.role == "admin",
+                    UserModel.is_active == True, UserModel.id != member.id)  # noqa: E712
+            .count()
+        )
+        if other_admins == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "Your organisation needs at least one active admin", "code": "LAST_ADMIN"},
+            )
+
+    member.role = new_role
+    deactivating = member.is_active and not new_active
+    member.is_active = new_active
+    revoked = _revoke_other_sessions(db, member.id, keep_jti=None) if deactivating else 0
+    db.commit()
+    log.info("org.member_updated", org_id=current_user.org_id, member_id=member.id,
+             role=member.role, is_active=member.is_active, sessions_revoked=revoked, by=current_user.id)
+    return MemberResponse(
+        id=member.id, email=member.email, first_name=member.first_name, last_name=member.last_name,
+        role=member.role, is_active=member.is_active, created_at=member.created_at,
     )

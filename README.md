@@ -4,7 +4,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-250%20passing-brightgreen)](tests/)
 
 ## Live Demo
 - **App**: https://neuradesk-112430812621.us-central1.run.app
@@ -83,14 +83,16 @@ graph TD
 
 ## Quickstart
 
-**Prerequisites:** Python 3.11, Docker (for Postgres — optional, SQLite works locally)
+**Prerequisites:** Python 3.11, Node.js 20+, a [Groq API key](https://console.groq.com/keys). Docker is optional (only needed for Postgres).
 
+**1. One-time setup**
 ```bash
 git clone https://github.com/Subh24ai/neuradesk.git
 cd neuradesk
 
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip && pip install -e ".[dev]"
+cd frontend && npm install && cd ..
 
 cp .env.example .env
 # Required: GROQ_API_KEY, ENTERPRISE_API_SECRET, API_SECRET_KEY
@@ -100,25 +102,43 @@ cp .env.example .env
 > New to the codebase? See **[DEVELOPMENT.md](DEVELOPMENT.md)** for the full dev
 > workflow, architecture internals, testing, and database migrations.
 
-**Full stack with Docker (recommended):**
+**2. Choose a database**
+
+- **No Docker (quickest):** use a local SQLite file. Set this in `.env`:
+  ```bash
+  DATABASE_URL=sqlite:///./neuradesk_local.db
+  ```
+- **Postgres in Docker:** keep the default `DATABASE_URL` from `.env.example` and start the database:
+  ```bash
+  docker-compose up -d db        # wait until `docker ps` shows it "(healthy)"
+  ```
+
+**3. Run it — three terminals, each from the repo root**
+```bash
+# Terminal 1 — mock enterprise APIs (port 8001)
+source .venv/bin/activate
+uvicorn services.enterprise_api:app --port 8001
+
+# Terminal 2 — backend (port 8000). The migrate step is safe to run every time.
+source .venv/bin/activate
+python -m scripts.migrate_db && uvicorn api.main:app --reload --port 8000
+
+# Terminal 3 — frontend (port 3000)
+cd frontend && npm run dev
+```
+Both Python services read `ENTERPRISE_API_SECRET` from `.env`, so they always match — don't override it on the command line.
+
+**4. Use it:** open **http://localhost:3000** and create an organization (you become its admin). With no SMTP configured, no email is sent — on the "Check your email" screen click **"Dev mode — click to reveal OTP"** and type the 6-digit code. Then submit a ticket such as *"I forgot my password"*.
+
+**Try every agent:** upload the four sample policies in [`samples/knowledge_base/`](samples/knowledge_base/) (Admin → Knowledge) and follow the ticket list in its [README](samples/knowledge_base/README.md).
+
+**Backend services in Docker instead** (Postgres + backend + mock APIs, migrations run automatically):
 ```bash
 docker-compose up --build
-# Backend → localhost:8000   Enterprise mock API → localhost:8001
 ```
+Then run only Terminal 3 (`cd frontend && npm run dev`) and open http://localhost:3000.
 
-**Local dev without Docker (SQLite fallback):**
-```bash
-# Terminal 1 — Enterprise mock API (port 8001):
-ENTERPRISE_API_SECRET=local-dev-secret-123 \
-  uvicorn services.enterprise_api:app --port 8001
-
-# Terminal 2 — Main backend (port 8000). Run the migrate step first after every pull:
-python -m scripts.migrate_db
-uvicorn api.main:app --reload --port 8000
-
-# Terminal 3 — Frontend (port 3000):
-cd frontend && npm install && npm run dev
-```
+**Troubleshooting:** `http proxy error … ECONNREFUSED` in the frontend terminal means the backend (Terminal 2) isn't running. Check Terminal 2 for errors — usually the database in `DATABASE_URL` isn't reachable.
 
 **Submit your first ticket:**
 ```bash
@@ -139,16 +159,68 @@ curl -s -X POST http://localhost:8000/tickets \
   -d '{"text": "I forgot my password"}' | jq .
 ```
 
-**Run tests:**
+## Command Reference
+
+All commands run from the repo root (`neuradesk/`) unless noted.
+
+**Every day — start the app (3 terminals)**
 ```bash
-pytest tests/ -v          # 234 tests
+# Terminal 1 — mock enterprise APIs (port 8001)
+source .venv/bin/activate
+uvicorn services.enterprise_api:app --port 8001
+
+# Terminal 2 — backend (port 8000)
+source .venv/bin/activate
+python -m scripts.migrate_db && uvicorn api.main:app --reload --port 8000
+
+# Terminal 3 — frontend (port 3000)
+cd frontend && npm run dev
+```
+Open **http://localhost:3000**. Stop any terminal with `Ctrl + C`.
+
+**After `git pull` (new code)**
+```bash
+source .venv/bin/activate
+pip install -e ".[dev]"              # new Python dependencies
+(cd frontend && npm install)          # new frontend dependencies
+python -m scripts.migrate_db          # bring the database schema up to date
+```
+Then restart Terminals 1–3.
+
+**Database**
+```bash
+docker-compose up -d db               # start Postgres (if DATABASE_URL points to it)
+docker ps                             # should show neuradesk-db-1 "(healthy)"
+python -m scripts.migrate_db          # safe for empty, old or current databases
+alembic current                       # which migration the database is at
+```
+No Docker? Set `DATABASE_URL=sqlite:///./neuradesk_local.db` in `.env` and skip `docker-compose`.
+
+**Check it's working**
+```bash
+curl http://localhost:8000/health        # backend is running
+curl http://localhost:8000/health/deep   # database + knowledge base + LLM key all OK
+curl http://localhost:8001/docs          # mock enterprise API is running
 ```
 
-**Run the load test:**
+**Tests and code quality**
 ```bash
-# Start both servers, then:
-python3 tests/load_test.py
+pytest tests/ -v                      # 250 backend tests (offline; no API key needed)
+ruff check .                          # Python lint (same as CI)
+(cd frontend && npx tsc --noEmit)     # TypeScript type check
+(cd frontend && npm run build)        # production frontend build
+python tests/eval_rag.py              # RAGAS quality eval (needs GROQ_API_KEY)
+python tests/load_test.py             # load test (start Terminals 1–2 first)
 ```
+
+**Troubleshooting**
+| Symptom | Fix |
+|---|---|
+| Frontend shows `http proxy error … ECONNREFUSED` | Backend (Terminal 2) isn't running — check it for errors |
+| Backend hangs or fails at `migrate_db` | Database unreachable: run `docker ps`; restart Docker Desktop, or switch to SQLite |
+| `column … does not exist` errors | Run `python -m scripts.migrate_db` |
+| Every ticket escalates as "unknown" | Groq model retired or key invalid — check Terminal 2 logs for `404`/`401` |
+| `Address already in use` | Another process uses the port: `lsof -i :8000` then stop it |
 
 ## Project Structure
 
